@@ -32,7 +32,10 @@ runs:
     - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
       with:
         node-version-file: .node-version
-        cache: pnpm
+        # A self-hosted pod's name holds `-runner-`. It has a local pnpm store, and fetching this
+        # cache over the home line took 3.5 minutes per job against 10 seconds to install from the store.
+        cache: ${{ !contains(runner.name, '-runner-') && 'pnpm' || '' }}
+        package-manager-cache: ${{ !contains(runner.name, '-runner-') }}
         registry-url: ${{ inputs.packages-token != '' && 'https://npm.pkg.github.com' || '' }}
         scope: ${{ inputs.packages-token != '' && '@servo-map' || '' }}
 
