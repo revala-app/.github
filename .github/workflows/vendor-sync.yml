@@ -37,6 +37,14 @@ on:
         description: The full commit SHA the caller pins this workflow at; vendor/ is run from it.
         required: true
         type: string
+      runs-on:
+        description: >-
+          JSON array of runner labels, consumed with fromJSON (a reusable workflow cannot take a list
+          input). Callers pass their CI_RUNNER_LINUX label, so ci-runner.json in servo-map-ops moves
+          these jobs with the rest of CI.
+        required: false
+        type: string
+        default: '["ubicloud-standard-2"]'
     secrets:
       APP_PRIVATE_KEY:
         required: true
@@ -47,7 +55,7 @@ permissions:
 jobs:
   plan:
     name: Read vendor.json
-    runs-on: ubicloud-standard-2
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
     outputs:
       targets: ${{ steps.targets.outputs.targets }}
     steps:
@@ -105,7 +113,7 @@ jobs:
   sync:
     name: Sync ${{ matrix.target }}
     needs: plan
-    runs-on: ubicloud-standard-2
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
     strategy:
       fail-fast: false
       matrix:
