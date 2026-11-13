@@ -1,5 +1,5 @@
 # Reusable: lint the calling repository's workflows with actionlint (and shellcheck, on their `run:`
-# blocks). This file owns the action's commit and the actionlint version; every Servo Map repository,
+# blocks). This file owns the action's commit and the actionlint version; every Revala repository,
 # this one included (ci.yml), runs this job, so a new version is one change here and one pin move in
 # each caller.
 #

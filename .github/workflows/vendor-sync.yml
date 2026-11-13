@@ -40,7 +40,7 @@ on:
       runs-on:
         description: >-
           JSON array of runner labels, consumed with fromJSON (a reusable workflow cannot take a list
-          input). Callers pass their CI_RUNNER_LINUX label, so ci-runner.json in servo-map-ops moves
+          input). Callers pass their CI_RUNNER_LINUX label, so ci-runner.json in revala-ops moves
           these jobs with the rest of CI.
         required: false
         type: string
@@ -75,14 +75,14 @@ jobs:
           fi
           caller="${WORKFLOW_REF#"$GITHUB_REPOSITORY"/}"
           caller="${caller%%@*}"
-          if ! grep -Eq "servo-map/\.github/\.github/workflows/vendor-sync\.yml@${TOOLING_REF}([[:space:]]|\$)" "$caller"; then
-            echo "::error file=$caller::tooling-ref $TOOLING_REF is not the commit $caller pins servo-map/.github/.github/workflows/vendor-sync.yml at."
+          if ! grep -Eq "revala-app/\.github/\.github/workflows/vendor-sync\.yml@${TOOLING_REF}([[:space:]]|\$)" "$caller"; then
+            echo "::error file=$caller::tooling-ref $TOOLING_REF is not the commit $caller pins revala-app/.github/.github/workflows/vendor-sync.yml at."
             exit 1
           fi
       # tooling-ref is now known to be the reviewed commit, so its scripts may run here too.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: servo-map/.github
+          repository: revala-app/.github
           ref: ${{ inputs.tooling-ref }}
           path: tooling
           persist-credentials: false
@@ -125,7 +125,7 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: servo-map/.github
+          repository: revala-app/.github
           ref: ${{ inputs.tooling-ref }}
           path: tooling
           persist-credentials: false
@@ -138,11 +138,11 @@ jobs:
         with:
           client-id: ${{ inputs.app-client-id }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: servo-map
+          owner: revala-app
           repositories: ${{ matrix.target }}
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: servo-map/${{ matrix.target }}
+          repository: revala-app/${{ matrix.target }}
           token: ${{ steps.token.outputs.token }}
           path: target
       - name: Copy the exported files
@@ -171,5 +171,5 @@ jobs:
           git push --force origin "$branch"
           if [ -z "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ]; then
             gh pr create --head "$branch" --title "chore(vendor): sync from $SOURCE" --body \
-              "Files exported by servo-map/$SOURCE (vendor.json) at $SHA. Generated: review the source change, not this diff. Merge after the checks pass."
+              "Files exported by revala-app/$SOURCE (vendor.json) at $SHA. Generated: review the source change, not this diff. Merge after the checks pass."
           fi
