@@ -23,7 +23,7 @@ function tree(t, files) {
   return root;
 }
 
-function sync(sourceRoot, targetRoot, { source = "servo-map-core", target = "servo-map-web", commit = COMMIT } = {}) {
+function sync(sourceRoot, targetRoot, { source = "revala-core", target = "revala-web", commit = COMMIT } = {}) {
   return spawnSync(
     process.execPath,
     [join(here, "sync.mjs"), "--source-root", sourceRoot, "--source", source, "--commit", commit, "--target", target, "--target-root", targetRoot],
@@ -32,14 +32,14 @@ function sync(sourceRoot, targetRoot, { source = "servo-map-core", target = "ser
 }
 
 const check = (targetRoot) => spawnSync(process.execPath, [join(targetRoot, ".vendor/check.mjs")], { encoding: "utf8" });
-const readLock = (targetRoot, source = "servo-map-core") => JSON.parse(readFileSync(join(targetRoot, `.vendor/${source}.json`), "utf8"));
+const readLock = (targetRoot, source = "revala-core") => JSON.parse(readFileSync(join(targetRoot, `.vendor/${source}.json`), "utf8"));
 const vendorJson = (targets) => JSON.stringify({ targets });
 
-/** A source exporting one file and one directory to servo-map-web, synced into an empty target. */
+/** A source exporting one file and one directory to revala-web, synced into an empty target. */
 function synced(t) {
   const source = tree(t, {
     "vendor.json": vendorJson({
-      "servo-map-web": [
+      "revala-web": [
         { from: "generated/tokens.css", to: "src/brand/tokens.css" },
         { from: "exports/web", to: "." },
       ],
@@ -67,7 +67,7 @@ test("copies a file mapping to its named path and a directory mapping file by fi
 test("writes a lock naming the source, the commit and every file's hash, sorted by path", (t) => {
   const { target } = synced(t);
   const lock = readLock(target);
-  assert.equal(lock.source, "servo-map/servo-map-core");
+  assert.equal(lock.source, "revala-app/revala-core");
   assert.equal(lock.commit, COMMIT);
   assert.deepEqual(Object.keys(lock.files), ["public/logos/a.png", "public/z.png", "src/brand/tokens.css"]);
   for (const [path, hash] of Object.entries(lock.files)) assert.equal(hash, sha256(join(target, path)));
@@ -93,20 +93,20 @@ test("removes a file the source no longer exports and leaves the target's own fi
 
 test("keeps one lock per source in the same target", (t) => {
   const { target } = synced(t);
-  const brand = tree(t, { "vendor.json": vendorJson({ "servo-map-web": [{ from: "icon.svg", to: "src/app/icon.svg" }] }), "icon.svg": "<svg/>" });
-  assert.equal(sync(brand, target, { source: "servo-map-brand" }).status, 0);
-  assert.deepEqual(Object.keys(readLock(target, "servo-map-brand").files), ["src/app/icon.svg"]);
+  const brand = tree(t, { "vendor.json": vendorJson({ "revala-web": [{ from: "icon.svg", to: "src/app/icon.svg" }] }), "icon.svg": "<svg/>" });
+  assert.equal(sync(brand, target, { source: "revala-brand" }).status, 0);
+  assert.deepEqual(Object.keys(readLock(target, "revala-brand").files), ["src/app/icon.svg"]);
   assert.equal(Object.keys(readLock(target).files).length, 3);
   assert.equal(existsSync(join(target, "public/z.png")), true);
   assert.equal(check(target).status, 0);
 });
 
 test("fails for a target vendor.json does not name, and for an export that does not exist", (t) => {
-  const source = tree(t, { "vendor.json": vendorJson({ "servo-map-web": [{ from: "gone.txt", to: "gone.txt" }] }) });
+  const source = tree(t, { "vendor.json": vendorJson({ "revala-web": [{ from: "gone.txt", to: "gone.txt" }] }) });
   const target = tree(t, {});
-  const unknown = sync(source, target, { target: "servo-map-ios" });
+  const unknown = sync(source, target, { target: "revala-ios" });
   assert.notEqual(unknown.status, 0);
-  assert.match(unknown.stderr, /vendor\.json has no target servo-map-ios/);
+  assert.match(unknown.stderr, /vendor\.json has no target revala-ios/);
   const missing = sync(source, target);
   assert.notEqual(missing.status, 0);
   assert.match(missing.stderr, /exports a missing path/);
@@ -124,7 +124,7 @@ test("check.mjs fails on an edited vendored file", (t) => {
   writeFileSync(join(target, "public/z.png"), "edited by hand");
   const result = check(target);
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /edited: public\/z\.png differs from servo-map\/servo-map-core@0123456/);
+  assert.match(result.stderr, /edited: public\/z\.png differs from revala-app\/revala-core@0123456/);
 });
 
 test("check.mjs fails on a missing vendored file", (t) => {
@@ -147,8 +147,8 @@ test("check.mjs fails when it was edited itself", (t) => {
 test("check.mjs accepts itself when one lock of several records it", (t) => {
   // Another source synced earlier with different tooling: its lock names a check.mjs since replaced.
   const { target } = synced(t);
-  const stale = { source: "servo-map/servo-map-brand", commit: COMMIT, files: {}, tooling: { ".vendor/check.mjs": "0".repeat(64) } };
-  writeFileSync(join(target, ".vendor/servo-map-brand.json"), JSON.stringify(stale));
+  const stale = { source: "revala-app/revala-brand", commit: COMMIT, files: {}, tooling: { ".vendor/check.mjs": "0".repeat(64) } };
+  writeFileSync(join(target, ".vendor/revala-brand.json"), JSON.stringify(stale));
   assert.equal(check(target).status, 0);
 });
 
@@ -156,7 +156,7 @@ test("check.mjs still passes a lock written before the tooling key existed", (t)
   const { target } = synced(t);
   const lock = readLock(target);
   delete lock.tooling;
-  writeFileSync(join(target, ".vendor/servo-map-core.json"), JSON.stringify(lock));
+  writeFileSync(join(target, ".vendor/revala-core.json"), JSON.stringify(lock));
   const path = join(target, ".vendor/check.mjs");
   writeFileSync(path, `${readFileSync(path, "utf8")}\n// unrecorded, so not checked\n`);
   const result = check(target);
@@ -172,44 +172,44 @@ function handLock(target, name, source, files) {
 
 test("takes over the paths a lock of the same repository under a longer name records", (t) => {
   const { source, target } = synced(t);
-  // A hand run split one source into two locks; the workflow writes `servo-map-core.json` only.
+  // A hand run split one source into two locks; the workflow writes `revala-core.json` only.
   writeFileSync(join(source, "exports/web/public/z.png"), "z, changed");
-  handLock(target, "servo-map-core.assets", "servo-map/servo-map-core.assets", ["public/z.png"]);
+  handLock(target, "revala-core.assets", "revala-app/revala-core.assets", ["public/z.png"]);
   writeFileSync(join(target, "own.txt"), "kept");
-  handLock(target, "servo-map-core.rest", "servo-map/servo-map-core.rest", ["public/logos/a.png", "own.txt"]);
+  handLock(target, "revala-core.rest", "revala-app/revala-core.rest", ["public/logos/a.png", "own.txt"]);
   const result = sync(source, target);
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(existsSync(join(target, ".vendor/servo-map-core.assets.json")), false);
-  assert.deepEqual(Object.keys(readLock(target, "servo-map-core.rest").files), ["own.txt"]);
+  assert.equal(existsSync(join(target, ".vendor/revala-core.assets.json")), false);
+  assert.deepEqual(Object.keys(readLock(target, "revala-core.rest").files), ["own.txt"]);
   assert.equal(readLock(target).files["public/z.png"], sha256(join(target, "public/z.png")));
   assert.equal(check(target).status, 0, check(target).stderr);
 });
 
 test("fails without writing when another repository's lock names a path it would write", (t) => {
   const { source, target } = synced(t);
-  handLock(target, "servo-map-brand", "servo-map/servo-map-brand", ["src/brand/tokens.css"]);
-  // `servo-map-core-extra` is another repository, not a longer name of servo-map-core.
-  handLock(target, "servo-map-core-extra", "servo-map/servo-map-core-extra", ["public/z.png"]);
+  handLock(target, "revala-brand", "revala-app/revala-brand", ["src/brand/tokens.css"]);
+  // `revala-core-extra` is another repository, not a longer name of revala-core.
+  handLock(target, "revala-core-extra", "revala-app/revala-core-extra", ["public/z.png"]);
   writeFileSync(join(source, "generated/tokens.css"), ":root{--changed:1}");
-  const before = readFileSync(join(target, ".vendor/servo-map-core.json"), "utf8");
+  const before = readFileSync(join(target, ".vendor/revala-core.json"), "utf8");
   const result = sync(source, target);
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /exports paths another source already vendors into servo-map-web/);
-  assert.match(result.stderr, /src\/brand\/tokens\.css \(\.vendor\/servo-map-brand\.json, servo-map\/servo-map-brand\)/);
-  assert.match(result.stderr, /public\/z\.png \(\.vendor\/servo-map-core-extra\.json, servo-map\/servo-map-core-extra\)/);
+  assert.match(result.stderr, /exports paths another source already vendors into revala-web/);
+  assert.match(result.stderr, /src\/brand\/tokens\.css \(\.vendor\/revala-brand\.json, revala-app\/revala-brand\)/);
+  assert.match(result.stderr, /public\/z\.png \(\.vendor\/revala-core-extra\.json, revala-app\/revala-core-extra\)/);
   assert.equal(readFileSync(join(target, "src/brand/tokens.css"), "utf8"), ":root{}");
-  assert.equal(readFileSync(join(target, ".vendor/servo-map-core.json"), "utf8"), before);
+  assert.equal(readFileSync(join(target, ".vendor/revala-core.json"), "utf8"), before);
 });
 
 const NEWER = "fedcba9876543210fedcba9876543210fedcba98";
 
 test("leaves the lock at its recorded commit when only the source commit moved", (t) => {
   const { source, target } = synced(t);
-  const before = readFileSync(join(target, ".vendor/servo-map-core.json"), "utf8");
+  const before = readFileSync(join(target, ".vendor/revala-core.json"), "utf8");
   const result = sync(source, target, { commit: NEWER });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /nothing to vendor/);
-  assert.equal(readFileSync(join(target, ".vendor/servo-map-core.json"), "utf8"), before);
+  assert.equal(readFileSync(join(target, ".vendor/revala-core.json"), "utf8"), before);
   assert.equal(readLock(target).commit, COMMIT);
   assert.equal(check(target).status, 0);
 });

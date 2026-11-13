@@ -22,7 +22,7 @@ function run(t, files) {
   return spawnSync(process.execPath, [script], { cwd: root, encoding: "utf8" });
 }
 
-// servo-map-core's layout: a glob, two literal directories, then other top-level keys.
+// revala-core's layout: a glob, two literal directories, then other top-level keys.
 const WORKSPACE = `packages:
   - "packages/*"
   - "scripts"

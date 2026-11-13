@@ -33,7 +33,7 @@ on:
       runs-on:
         description: >-
           JSON array of runner labels, consumed with fromJSON (a reusable workflow cannot take a list
-          input). Callers pass their CI_RUNNER_LINUX label, so ci-runner.json in servo-map-ops moves
+          input). Callers pass their CI_RUNNER_LINUX label, so ci-runner.json in revala-ops moves
           these jobs with the rest of CI.
         required: false
         type: string
@@ -69,8 +69,8 @@ jobs:
           fi
           caller="${WORKFLOW_REF#"$GITHUB_REPOSITORY"/}"
           caller="${caller%%@*}"
-          if ! grep -Eq "servo-map/\.github/\.github/workflows/vendor-freshness\.yml@${TOOLING_REF}([[:space:]]|\$)" "$caller"; then
-            echo "::error file=$caller::tooling-ref $TOOLING_REF is not the commit $caller pins servo-map/.github/.github/workflows/vendor-freshness.yml at."
+          if ! grep -Eq "revala-app/\.github/\.github/workflows/vendor-freshness\.yml@${TOOLING_REF}([[:space:]]|\$)" "$caller"; then
+            echo "::error file=$caller::tooling-ref $TOOLING_REF is not the commit $caller pins revala-app/.github/.github/workflows/vendor-freshness.yml at."
             exit 1
           fi
       - name: List the targets
@@ -100,7 +100,7 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: servo-map/.github
+          repository: revala-app/.github
           ref: ${{ inputs.tooling-ref }}
           path: tooling
           persist-credentials: false
@@ -112,7 +112,7 @@ jobs:
         with:
           client-id: ${{ inputs.app-client-id }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: servo-map
+          owner: revala-app
           repositories: ${{ matrix.target }}
           permission-contents: read
           permission-pull-requests: read
@@ -126,7 +126,7 @@ jobs:
         run: |
           set -euo pipefail
           lock="$RUNNER_TEMP/lock.json"
-          if ! gh api -H "Accept: application/vnd.github.raw+json" "repos/servo-map/$TARGET/contents/.vendor/$SOURCE.json" >"$lock" 2>"$RUNNER_TEMP/error.txt"; then
+          if ! gh api -H "Accept: application/vnd.github.raw+json" "repos/revala-app/$TARGET/contents/.vendor/$SOURCE.json" >"$lock" 2>"$RUNNER_TEMP/error.txt"; then
             rm -f "$lock"
             if ! grep -q "HTTP 404" "$RUNNER_TEMP/error.txt"; then
               cat "$RUNNER_TEMP/error.txt" >&2
@@ -150,7 +150,7 @@ jobs:
           SOURCE: ${{ github.event.repository.name }}
         run: |
           set -euo pipefail
-          url="$(gh pr list -R "servo-map/$TARGET" --head "vendor/$SOURCE" --state open --json url --jq '.[].url')"
+          url="$(gh pr list -R "revala-app/$TARGET" --head "vendor/$SOURCE" --state open --json url --jq '.[].url')"
           if [ -n "$url" ]; then
             echo "::error::$TARGET is behind $SOURCE: merge $url once its checks pass."
           else

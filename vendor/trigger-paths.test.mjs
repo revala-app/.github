@@ -24,12 +24,12 @@ function run(t, caller, files = {}) {
   const tree = {
     "vendor.json": JSON.stringify({
       targets: {
-        "servo-map-web": [{ from: "exports/web", to: "." }],
-        "servo-map-ios": [
+        "revala-web": [{ from: "exports/web", to: "." }],
+        "revala-ios": [
           { from: "generated/swift/Tokens.swift", to: "Vendor/Tokens.swift" },
           { from: "app-icon/ServoMap.icon", to: "Vendor/ServoMap.icon" },
         ],
-        "servo-map-inbox": [{ from: "generated/tokens.css", to: "app/tokens.css" }],
+        "revala-inbox": [{ from: "generated/tokens.css", to: "app/tokens.css" }],
       },
     }),
     "exports/web/public/a.png": "a",
@@ -111,7 +111,7 @@ test("reads the push filter, not another event's or paths-ignore", (t) => {
 });
 
 test("fails for an export that does not exist", (t) => {
-  const result = run(t, pushPaths("**"), { "vendor.json": JSON.stringify({ targets: { "servo-map-web": [{ from: "gone", to: "gone" }] } }) });
+  const result = run(t, pushPaths("**"), { "vendor.json": JSON.stringify({ targets: { "revala-web": [{ from: "gone", to: "gone" }] } }) });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /exports a missing path: gone/);
 });
