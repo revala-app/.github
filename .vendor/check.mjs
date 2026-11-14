@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Fails when a vendored file differs from what its source repository exported (decision 0015).
-// Vendored by servo-map/.github vendor/sync.mjs; run from the repository root: node .vendor/check.mjs
+// Vendored by revala-app/.github vendor/sync.mjs; run from the repository root: node .vendor/check.mjs
 //
 // Each `.vendor/<source>.json` lock lists the files a source repository owns here, with their
 // SHA-256 at the source commit it names. Fix a failure in the source and let its sync pull request
@@ -43,7 +43,7 @@ for (const name of readdirSync(vendorDir).filter((n) => n.endsWith(".json"))) {
 if (recordedSelf.length > 0) {
   checked += 1;
   if (!recordedSelf.includes(sha256(self))) {
-    problems.push(`edited: ${SELF} matches no lock; it is owned by servo-map/.github vendor/check.mjs`);
+    problems.push(`edited: ${SELF} matches no lock; it is owned by revala-app/.github vendor/check.mjs`);
   }
 }
 
