@@ -27,7 +27,7 @@ function run(t, caller, files = {}) {
         "revala-web": [{ from: "exports/web", to: "." }],
         "revala-ios": [
           { from: "generated/swift/Tokens.swift", to: "Vendor/Tokens.swift" },
-          { from: "app-icon/ServoMap.icon", to: "Vendor/ServoMap.icon" },
+          { from: "app-icon/Revala.icon", to: "Vendor/Revala.icon" },
         ],
         "revala-inbox": [{ from: "generated/tokens.css", to: "app/tokens.css" }],
       },
@@ -35,7 +35,7 @@ function run(t, caller, files = {}) {
     "exports/web/public/a.png": "a",
     "generated/swift/Tokens.swift": "enum Tokens {}",
     "generated/tokens.css": ":root{}",
-    "app-icon/ServoMap.icon/icon.json": "{}",
+    "app-icon/Revala.icon/icon.json": "{}",
     [WORKFLOW]: caller,
     ...files,
   };
@@ -47,7 +47,7 @@ function run(t, caller, files = {}) {
 }
 
 test("passes when every exported file and directory is covered", (t) => {
-  const result = run(t, pushPaths("exports/**", "app-icon/ServoMap.icon/**", "generated/swift/**", "generated/tokens.css", "vendor.json"));
+  const result = run(t, pushPaths("exports/**", "app-icon/Revala.icon/**", "generated/swift/**", "generated/tokens.css", "vendor.json"));
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /trigger paths: 4 exported paths start \.github\/workflows\/vendor-sync\.yml/);
 });
@@ -63,7 +63,7 @@ test("fails naming each export the filter misses", (t) => {
   const result = run(t, pushPaths("exports/**", "generated/swift/**", "vendor.json"));
   assert.equal(result.status, 1);
   assert.match(result.stderr, /is not started by every path vendor\.json exports/);
-  assert.match(result.stderr, /\n {2}app-icon\/ServoMap\.icon\n {2}generated\/tokens\.css$/m);
+  assert.match(result.stderr, /\n {2}app-icon\/Revala\.icon\n {2}generated\/tokens\.css$/m);
   assert.doesNotMatch(result.stderr, /exports\/web/);
 });
 
@@ -91,7 +91,7 @@ test("treats pattern characters as GitHub's filter does", (t) => {
   assert.match(star.stderr, /generated\/swift\/Tokens\.swift/);
   const range = run(t, pushPaths("exports/**", "app-icon/**", "generated/swift/**", "generated/[a-z]okens.css"));
   assert.equal(range.status, 0, range.stderr);
-  const anywhere = run(t, pushPaths("**/web/**", "**/ServoMap.icon/**", "**/Tokens.swift", "**/tokens.css"));
+  const anywhere = run(t, pushPaths("**/web/**", "**/Revala.icon/**", "**/Tokens.swift", "**/tokens.css"));
   assert.equal(anywhere.status, 0, anywhere.stderr);
 });
 
@@ -107,7 +107,7 @@ test("reads the push filter, not another event's or paths-ignore", (t) => {
   const on = "  pull_request:\n    paths:\n      - '**'\n  push:\n    paths-ignore:\n      - docs/**\n    paths:\n      - exports/**";
   const result = run(t, workflow(on));
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /app-icon\/ServoMap\.icon/);
+  assert.match(result.stderr, /app-icon\/Revala\.icon/);
 });
 
 test("fails for an export that does not exist", (t) => {
