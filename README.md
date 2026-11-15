@@ -138,7 +138,6 @@ The tests run the scripts as processes on temporary directories and need no inst
 
 | Repository | Owns |
 |---|---|
-| `revala-core` | `@revala-app/shared`, the API and ingest Worker, the OpenAPI contract, catalogue assets (fuel brand logos, car images, map outlines), decisions |
+| `revala-core` | `@revala-app/shared`, the API and ingest Worker, the site at revala.app (`packages/web`) and the owner console (`packages/console`, both since its decision 0217), the OpenAPI contract, catalogue assets (fuel brand logos, car images, map outlines), decisions |
 | `revala-brand` | `@revala-app/design-tokens`, the app icon and mark, the design system spec |
-| `revala-web` | the Next.js site at revala.app |
 | `revala-ios` | the SwiftUI app |
