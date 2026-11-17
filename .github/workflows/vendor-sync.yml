@@ -56,6 +56,7 @@ jobs:
   plan:
     name: Read vendor.json
     runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: 10
     outputs:
       targets: ${{ steps.targets.outputs.targets }}
     steps:
@@ -114,6 +115,7 @@ jobs:
     name: Sync ${{ matrix.target }}
     needs: plan
     runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
