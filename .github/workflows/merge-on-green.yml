@@ -1,0 +1,120 @@
+# Reusable: squash-merge a pull request labelled `automerge` once every check on its head commit is
+# green (revala-core decision 0232).
+#
+# The organisation is on GitHub's free plan, so rulesets and required checks are not enforced on its
+# private repositories, and GitHub's own auto-merge would merge before CI has run. This waits for CI
+# instead: merge/decide.mjs merges only when every workflow run and check run on the head commit
+# finished green and every check named in `required-checks` succeeded. A release pull request
+# (`autorelease:` label) is never merged here.
+#
+# The caller runs it on `workflow_run` (each of its pull-request workflows finishing) and on
+# `pull_request_target` `labeled` (the label added after CI was already green). Neither checks out
+# the pull request's code: only this repository's merge/ runs, at `tooling-ref`.
+#
+# Reads use the caller's GITHUB_TOKEN; the merge uses the release bot's token, cut down to writing
+# the caller's contents and pull requests, so the merge commit on main starts the caller's push
+# workflows (a GITHUB_TOKEN push would not).
+
+name: Merge on green (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      app-client-id:
+        description: Client ID of the misoto22-release-bot GitHub App (the APP_CLIENT_ID variable).
+        required: true
+        type: string
+      tooling-ref:
+        description: The full commit SHA the caller pins this workflow at; merge/ is run from it.
+        required: true
+        type: string
+      required-checks:
+        description: >-
+          JSON array of the check run names that must have succeeded, as `gh pr checks` lists them
+          (a reusable workflow's job is `<caller job id> / <job name>`).
+        required: true
+        type: string
+      runs-on:
+        description: JSON array of runner labels, consumed with fromJSON.
+        required: false
+        type: string
+        default: '["ubicloud-standard-2"]'
+    secrets:
+      APP_PRIVATE_KEY:
+        required: true
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  pull-requests: read
+
+jobs:
+  merge:
+    name: Merge on green
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: 5
+    if: >-
+      (github.event_name == 'workflow_run'
+        && contains(fromJSON('["pull_request", "pull_request_target"]'), github.event.workflow_run.event))
+      || (github.event_name == 'pull_request_target' && github.event.label.name == 'automerge')
+    steps:
+      - name: Check the caller
+        env:
+          TOOLING_REF: ${{ inputs.tooling-ref }}
+          WORKFLOW: ${{ github.workflow }}
+        run: |
+          set -euo pipefail
+          if [ "$WORKFLOW" != "Merge on green" ]; then
+            echo "::error::The caller workflow must be named \"Merge on green\" (merge/decide.mjs leaves its own runs out by that name), got \"$WORKFLOW\"."
+            exit 1
+          fi
+          if ! [[ "$TOOLING_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::tooling-ref must be a full 40-character lowercase commit SHA, got \"$TOOLING_REF\"."
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: caller
+          sparse-checkout: .github/workflows
+          persist-credentials: false
+      - name: Check tooling-ref is the commit the caller pins
+        env:
+          TOOLING_REF: ${{ inputs.tooling-ref }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          set -euo pipefail
+          caller="${WORKFLOW_REF#"$GITHUB_REPOSITORY"/}"
+          caller="caller/${caller%%@*}"
+          if ! grep -Eq "revala-app/\.github/\.github/workflows/merge-on-green\.yml@${TOOLING_REF}([[:space:]]|\$)" "$caller"; then
+            echo "::error file=$caller::tooling-ref $TOOLING_REF is not the commit $caller pins revala-app/.github/.github/workflows/merge-on-green.yml at."
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: revala-app/.github
+          ref: ${{ inputs.tooling-ref }}
+          path: tooling
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: tooling/.node-version
+      - id: token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ inputs.app-client-id }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Merge what is green
+        env:
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}
+          PR: ${{ github.event.pull_request.number }}
+          REQUIRED: ${{ inputs.required-checks }}
+          SELF: Merge on green
+          READ_TOKEN: ${{ github.token }}
+          MERGE_TOKEN: ${{ steps.token.outputs.token }}
+        run: node tooling/merge/merge-on-green.mjs

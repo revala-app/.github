@@ -15,6 +15,8 @@ Organisation profile and the tooling every Revala repository shares.
   main branch still lacks what the source exports.
 - `.github/workflows/actionlint.yml`: the workflow lint every repository runs, this one included.
   It owns the actionlint version and the action's commit, so neither is copied into a caller.
+- `.github/workflows/merge-on-green.yml` and `merge/`: squash-merges a pull request labelled
+  `automerge` once every check on its head commit is green (decision 0232 in revala-core).
 
 ## Vendor sync
 
@@ -118,6 +120,54 @@ jobs:
 - **Check name.** GitHub names a called job `<caller job id> / <called job name>`: with the job id
   `actionlint` the check is `actionlint / Lint workflows`.
 
+## Merge on green
+
+The free organisation enforces no required checks on private repositories, so GitHub's auto-merge
+would merge at once. A repository adds a workflow named exactly `Merge on green`, pinned by commit
+SHA, and an `automerge` label; a pull request carrying the label is squash-merged by the release bot
+once it is green:
+
+```yaml
+name: Merge on green
+
+on:
+  workflow_run:
+    workflows: [CI, PR title] # every workflow a pull request runs
+    types: [completed]
+  pull_request_target:
+    types: [labeled]
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: merge-on-green-${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}
+
+jobs:
+  merge:
+    uses: revala-app/.github/.github/workflows/merge-on-green.yml@<sha> # main
+    with:
+      app-client-id: ${{ vars.APP_CLIENT_ID }}
+      tooling-ref: <sha> # the same commit as the line above
+      required-checks: '["Check", "Test", "pr-title / pr-title"]'
+    secrets:
+      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+```
+
+- **Green means all of it.** `merge/decide.mjs` waits while any workflow run or check run on the
+  head commit is unfinished, stops at any that failed or was cancelled (a later run of the same
+  workflow or check supersedes it), and merges only once every name in `required-checks` succeeded.
+  `required-checks` must name the checks that always run: a path-filtered workflow may not exist yet
+  when the others finish.
+- **The head it judged.** The merge passes the commit it checked as `sha`, so a push after the
+  decision makes GitHub refuse the merge, and the next run judges the new commit.
+- **Never a release.** A pull request with an `autorelease:` label is left for a person.
+- **No pull request code runs.** Both triggers run from the default branch; only `merge/` at
+  `tooling-ref` executes.
+
 ## Node major check
 
 `actions/setup/check-node-version.mjs` compares `.node-version` with the root `package.json`
@@ -130,7 +180,7 @@ repository without that list has only its root checked.
 `.github/workflows/ci.yml` runs on pull requests and on `main`:
 
 ```sh
-node --test                          # vendor/ and actions/setup, on the Node in .node-version
+node --test                          # vendor/, merge/ and actions/setup, on the Node in .node-version
 actionlint .github/workflows/*.yml   # the reusable actionlint.yml, called locally
 ```
 
