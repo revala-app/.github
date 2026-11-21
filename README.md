@@ -3,6 +3,8 @@
 Organisation profile and the tooling every Revala repository shares.
 
 - `profile/README.md`: the organisation's public profile.
+- `.github/pull_request_template.md`: the default pull request template of every repository without its own; it asks
+  for the evidence a reviewer reads instead of the diff.
 - `actions/setup`: the Node setup every repository's jobs run after checkout — pnpm from
   `packageManager`, Node from `.node-version`, a check that `engines` and `@types/node` name the same
   major, a frozen install, and (with `packages-token`) GitHub Packages auth for `@revala-app/*`.
