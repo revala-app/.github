@@ -1,8 +1,10 @@
 // .node-version owns the Node major (HAR-DEP-002). package.json engines.node states it for tools
 // that read that field instead, and every @types/node should describe the same runtime, so both are
 // copies this check keeps in step: the job fails when either names another major.
-// Runs from the repository root; covers the root package.json and the package.json of every
-// workspace package pnpm-workspace.yaml lists under `packages:` (the root alone when it lists none).
+// Runs from the package's directory (the action's `working-directory`, the repository root by
+// default); covers that package.json and the package.json of every workspace package its
+// pnpm-workspace.yaml lists under `packages:` (that one alone when it lists none). The action passes
+// the .node-version it found as NODE_VERSION_FILE; without it, the one in the current directory.
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -68,7 +70,7 @@ function manifests() {
   return ["package.json", ...[...found].sort()];
 }
 
-const major = readFileSync(".node-version", "utf8").trim().replace(/^v/, "").split(".")[0];
+const major = readFileSync(process.env.NODE_VERSION_FILE || ".node-version", "utf8").trim().replace(/^v/, "").split(".")[0];
 const problems = [];
 
 const root = JSON.parse(readFileSync("package.json", "utf8"));
