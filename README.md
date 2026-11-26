@@ -8,7 +8,9 @@ Organisation profile and the tooling every Revala repository shares.
 - `actions/setup`: the Node setup every repository's jobs run after checkout — pnpm from
   `packageManager`, Node from `.node-version`, a check that `engines` and `@types/node` name the same
   major, a frozen install, and (with `packages-token`) GitHub Packages auth for `@revala-app/*`.
-  Reference it by commit SHA like any third-party action.
+  `working-directory` (default `.`) points it at a package in a subdirectory, such as revala-ops
+  `workers/backup`; revala-ops adopts it once this input is merged. Reference it by commit SHA like
+  any third-party action.
 - `vendor/`: copies files one repository owns into another with recorded provenance (decision
   0015 in revala-core). A source repository lists its exports in `vendor.json` and calls
   `.github/workflows/vendor-sync.yml`; each target receives a pull request with the files, a
@@ -170,12 +172,34 @@ jobs:
 - **No pull request code runs.** Both triggers run from the default branch; only `merge/` at
   `tooling-ref` executes.
 
+## Node setup
+
+```yaml
+steps:
+  - uses: actions/checkout@<sha> # vX
+  - uses: revala-app/.github/actions/setup@<sha> # main
+    with:
+      packages-token: ${{ secrets.GITHUB_TOKEN }} # only where @revala-app packages are installed
+      working-directory: workers/backup # only where the package is not at the root
+```
+
+- **`packages-token`** is the job's own `GITHUB_TOKEN`, as revala-core's and revala-brand's
+  `publish.yml` pass it; setup-node writes a user-level `.npmrc` for `npm.pkg.github.com` and the
+  token stays exported as `NODE_AUTH_TOKEN` for the rest of the job.
+- **`working-directory`** is the package's directory, relative to the repository root. Its
+  `package.json` gives `packageManager` and `engines`, its `pnpm-lock.yaml` keys the cache, and the
+  install runs there. `.node-version` is the one in that directory or the nearest above it, up to the
+  repository root (`find-node-version.sh`), so one root file serves several packages. The default,
+  `.`, is the repository root, and an empty value means the same. revala-ops' Worker jobs
+  (`workers/backup`, `workers/monitor`) move to this input after it is merged.
+- **`install: false`** skips `pnpm install --frozen-lockfile`.
+
 ## Node major check
 
-`actions/setup/check-node-version.mjs` compares `.node-version` with the root `package.json`
-(`engines.node` and `@types/node`) and with `@types/node` in every workspace package. The packages
-are the `packages:` entries of `pnpm-workspace.yaml` (names, `*`, `**` and `!` exclusions); a
-repository without that list has only its root checked.
+`actions/setup/check-node-version.mjs` compares `.node-version` with the `package.json` in the
+working directory (`engines.node` and `@types/node`) and with `@types/node` in every workspace
+package. The packages are the `packages:` entries of that directory's `pnpm-workspace.yaml` (names,
+`*`, `**` and `!` exclusions); a package without that list has only its own `package.json` checked.
 
 ## Checks
 
@@ -186,10 +210,16 @@ node --test                          # vendor/, merge/ and actions/setup, on the
 actionlint .github/workflows/*.yml   # the reusable actionlint.yml, called locally
 ```
 
-The tests run the scripts as processes on temporary directories and need no install.
+The tests run the scripts as processes on temporary directories and need no install. The
+`Setup action` jobs run `uses: ./actions/setup` end to end three ways: with its defaults and with an
+empty `working-directory` (the fixture copied to the root), and with `working-directory` set to
+`actions/setup/test/fixtures/package`, a package with no dependencies whose `.node-version` is the
+root one. The install there fetches nothing beyond pnpm itself.
 
 | Repository | Owns |
 |---|---|
 | `revala-core` | `@revala-app/shared`, the API and ingest Worker, the site at revala.app (`packages/web`) and the owner console (`packages/console`, both since its decision 0217), the OpenAPI contract, catalogue assets (fuel brand logos, car images, map outlines), decisions |
 | `revala-brand` | `@revala-app/design-tokens`, the app icon and mark, the design system spec |
 | `revala-ios` | the SwiftUI app |
+| `revala-ops` | account configuration and secret distribution as OpenTofu stacks (decision 0074 in revala-core), the backup and monitor Workers, the fuel relays, runbooks |
+| `revala-android` | the Android app; paused and archived (decision 0214 in revala-core): no vendor target, nothing writes to it |

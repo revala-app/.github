@@ -5,11 +5,17 @@
 #   - uses: actions/checkout@<sha> # vX
 #   - uses: revala-app/.github/actions/setup@<sha> # main
 #     with:
-#       packages-token: ${{ secrets.SERVO_MAP_PACKAGES_TOKEN }}   # only where @revala-app packages are installed
+#       packages-token: ${{ secrets.GITHUB_TOKEN }}   # only where @revala-app packages are installed
+#       working-directory: workers/backup               # only where the package is not at the root
 #
 # With `packages-token`, setup-node writes a user-level .npmrc for npm.pkg.github.com and the token
 # is exported as NODE_AUTH_TOKEN for the rest of the job: pnpm re-verifies the lockfile against the
 # registry on every command, not only on install.
+#
+# `working-directory` names the package's directory, relative to the repository root (empty is `.`):
+# its package.json gives `packageManager` and `engines`, its pnpm-lock.yaml keys the cache, and the
+# install runs there. `.node-version` is the one in that directory or, failing that, the nearest in
+# a directory above it up to the repository root, so one root file can serve several packages.
 
 name: Revala Node setup
 description: pnpm, Node from .node-version, a Node-major check, and a frozen install.
@@ -23,21 +29,35 @@ inputs:
     description: Run `pnpm install --frozen-lockfile`.
     required: false
     default: "true"
+  working-directory:
+    description: The package's directory, relative to the repository root. Empty means `.`.
+    required: false
+    default: "."
 
 runs:
   using: composite
   steps:
+    - name: Find .node-version
+      id: paths
+      shell: bash
+      env:
+        WORKING_DIRECTORY: ${{ inputs.working-directory || '.' }}
+      run: bash "$GITHUB_ACTION_PATH/find-node-version.sh"
+
     - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      with:
+        package_json_file: ${{ (inputs.working-directory || '.') == '.' && 'package.json' || format('{0}/package.json', inputs.working-directory) }}
 
     - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
       with:
-        node-version-file: .node-version
+        node-version-file: ${{ steps.paths.outputs.node-version-file }}
         # A self-hosted pod's name holds `-runner-`. It has a local pnpm store, and fetching this
         # cache over the home line took 3.5 minutes per job against 10 seconds to install from the store.
         cache: ${{ !contains(runner.name, '-runner-') && 'pnpm' || '' }}
         package-manager-cache: ${{ !contains(runner.name, '-runner-') }}
         registry-url: ${{ inputs.packages-token != '' && 'https://npm.pkg.github.com' || '' }}
         scope: ${{ inputs.packages-token != '' && '@revala-app' || '' }}
+        cache-dependency-path: ${{ (inputs.working-directory || '.') != '.' && format('{0}/pnpm-lock.yaml', inputs.working-directory) || '' }}
 
     - name: Export the packages token
       if: inputs.packages-token != ''
@@ -48,9 +68,13 @@ runs:
 
     - name: Check the Node major
       shell: bash
+      working-directory: ${{ inputs.working-directory || '.' }}
+      env:
+        NODE_VERSION_FILE: ${{ github.workspace }}/${{ steps.paths.outputs.node-version-file }}
       run: node "$GITHUB_ACTION_PATH/check-node-version.mjs"
 
     - name: Install
       if: inputs.install == 'true'
       shell: bash
+      working-directory: ${{ inputs.working-directory || '.' }}
       run: pnpm install --frozen-lockfile

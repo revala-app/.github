@@ -103,3 +103,19 @@ test("fails for the root's own @types/node", (t) => {
   assert.equal(result.status, 1);
   assert.match(result.stderr, /^- package\.json @types\/node is "\^24\.0\.0", expected \^26$/m);
 });
+
+test("reads the .node-version that NODE_VERSION_FILE names", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "node-version-test-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  // A package in a subdirectory (revala-ops workers/*) with the repository's one .node-version above it.
+  mkdirSync(join(root, "workers/backup"), { recursive: true });
+  writeFileSync(join(root, ".node-version"), "24\n");
+  writeFileSync(join(root, "workers/backup/package.json"), pkg("^24.0.0", { engines: { node: "24.x" } }));
+  const result = spawnSync(process.execPath, [script], {
+    cwd: join(root, "workers/backup"),
+    encoding: "utf8",
+    env: { ...process.env, NODE_VERSION_FILE: join(root, ".node-version") },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^Node 24:/);
+});

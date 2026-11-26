@@ -1,5 +1,5 @@
-# The tests of the tooling other repositories run from here (vendor/, actions/setup) and a lint of
-# the workflows they call. GitHub-hosted: the repository is public, so the minutes are free.
+# The tests of the tooling other repositories run from here (vendor/, actions/setup), the setup
+# action run end to end on a fixture package, and a lint of the workflows they call. GitHub-hosted: the repository is public, so the minutes are free.
 name: CI
 
 on:
@@ -30,6 +30,49 @@ jobs:
       - run: node --test
       # Fails when a vendored file (profile/README.md) was hand-edited away from its source (core).
       - run: node .vendor/check.mjs
+
+  # The setup action end to end, as a caller runs it: by default from the repository root, with an
+  # empty `working-directory` (read as `.`), and on a package in a subdirectory, whose .node-version is
+  # the root one found by walking up. The fixture has no dependencies, so the install fetches nothing
+  # beyond the pnpm that pnpm/action-setup installs.
+  setup:
+    name: Setup action (${{ matrix.case }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [default, empty, subdirectory]
+    env:
+      FIXTURE: actions/setup/test/fixtures/package
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Put the fixture package at the repository root
+        if: matrix.case != 'subdirectory'
+        run: cp "$FIXTURE/package.json" "$FIXTURE/pnpm-lock.yaml" .
+      - name: Run the action with its defaults
+        if: matrix.case == 'default'
+        uses: ./actions/setup
+      - name: Run the action with an empty working-directory
+        if: matrix.case == 'empty'
+        uses: ./actions/setup
+        with:
+          working-directory: ""
+      - name: Run the action on the subdirectory fixture
+        if: matrix.case == 'subdirectory'
+        uses: ./actions/setup
+        with:
+          working-directory: actions/setup/test/fixtures/package
+      - name: Check the Node major, the pnpm version and the install
+        env:
+          PACKAGE_DIR: ${{ matrix.case == 'subdirectory' && env.FIXTURE || '.' }}
+        run: |
+          node_major=$(node --version | sed 's/^v//; s/\..*//')
+          test "$node_major" = "$(cut -d. -f1 .node-version)"
+          test "$(pnpm --version)" = "$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).packageManager.split("@")[1]' "$FIXTURE/package.json")"
+          test -f "$PACKAGE_DIR/node_modules/.modules.yaml"
 
   # The job every Revala repository runs (actionlint.yml owns the action and tool version), called
   # locally so this repository lints itself with the definition it publishes. Reports as
