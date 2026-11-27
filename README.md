@@ -173,6 +173,13 @@ jobs:
   sees what they saw. A `labeled` event judges its own pull request alone, in a group per pull request
   (`merge-on-green-job-label-<number>`) that a sweep never replaces. Both may judge one green head;
   the second merge GitHub refuses is reported as done when the pull request was merged at that head.
+  An event the job skips (a push's CI, another label) is put in a group of its own run, so it never
+  replaces the pending sweep.
+- **A refused merge fails its own run only.** When GitHub refuses a merge for any other reason (a
+  conflict: `decide.mjs` does not read `mergeable`), the run fails if it is the pull request's own: its
+  label being added, or a workflow run on its head finishing. A sweep another head started, which
+  finds the same head refused again, logs a warning instead, so one stuck pull request does not fail
+  every run in the repository until someone fixes or unlabels it.
 - **Green means all of it.** `merge/decide.mjs` waits while any workflow run or check run on the
   head commit is unfinished, stops at any that failed or was cancelled (a later run of the same
   workflow, or of the same check in the same workflow, supersedes it), and merges only once every

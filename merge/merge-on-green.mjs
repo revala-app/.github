@@ -17,8 +17,11 @@
 //
 // Waiting is not failing: a pull request whose checks still run, or which is not labelled, exits 0,
 // and the next finished workflow run looks again. A red check exits 0 too, and says which, as does a
-// label added by someone who may not ask for a merge; a merge
-// GitHub refuses (a conflict, a head that moved) fails the run so the owner hears of it. Nothing is
+// label added by someone who may not ask for a merge. A merge GitHub refuses (a conflict, a head
+// that moved) fails the run so the owner hears of it, when the run is that pull request's own: its
+// label being added, or a workflow run on its head finishing. In a sweep another head started, the
+// refusal is the same head refused again (its own runs' sweeps already failed for it), and it is
+// a warning, so one stuck pull request does not fail every run in the repository. Nothing is
 // retried here: the next event is the retry. A head behind its base waits for someone to update the
 // branch: this never does.
 
@@ -158,7 +161,12 @@ async function main() {
   // another sweep when it finishes; a head it does not hold back is judged in full.
   const recent = PR ? [] : (await get(readToken, `/repos/${repo}/actions/runs?event=pull_request&per_page=100`)).workflow_runs;
 
-  /** Judges one pull request at `sha` and merges it if it may be; false when GitHub refused the merge. */
+  const eventSha = sha;
+
+  /**
+   * Judges one pull request at `sha` and merges it if it may be; false when GitHub refused the merge
+   * in a run that is the pull request's own (module comment).
+   */
   async function settle(pr, sha) {
     const asked = labelled(pr);
     const early = asked ? runsVerdict(recent, sha, self) : null;
@@ -194,7 +202,12 @@ async function main() {
         console.log(`#${pr.number} was merged by another run, as ${now.merge_commit_sha}.`);
         return true;
       }
-      console.log(`::error::#${pr.number} could not be merged: HTTP ${merged.status} ${merged.data?.message ?? ""}`);
+      const why = `HTTP ${merged.status} ${merged.data?.message ?? ""}`.trim();
+      if (!PR && sha !== eventSha) {
+        console.log(`::warning::#${pr.number} could not be merged again at ${sha}: ${why}. A run of its own failed for it.`);
+        return true;
+      }
+      console.log(`::error::#${pr.number} could not be merged: ${why}`);
       return false;
     }
     console.log(`#${pr.number} merged as ${merged.data.sha}.`);

@@ -376,6 +376,29 @@ test("takes a merge refused because another run merged that head as done, and no
   assert.match(elsewhere.out, /::error::#7 could not be merged: HTTP 405/);
 });
 
+test("fails a refused merge only in a run of the pull request's own; a sweep another head started warns", async () => {
+  const refused = { merge: [405, { message: "Pull Request is not mergeable" }] };
+  // Its own: a workflow run on its head finished, or its label was added.
+  for (const env of [{}, event("owner")]) {
+    const own = await attempt(refused, env);
+    assert.equal(own.code, 1, own.out);
+    assert.match(own.out, /::error::#7 could not be merged: HTTP 405 Pull Request is not mergeable/);
+  }
+  // Another pull request's run finished: #7 is refused again (a warning); #8, refused at its own head, the
+  // commit the finished run was for, is an error. Both are tried.
+  const other = "2".repeat(40);
+  const both = await attempt({ ...refused, pulls: [pull(), at(8, other)], heads: { [other]: ranOn(other) } }, { SHA: other });
+  assert.equal(both.code, 1, both.out);
+  assert.match(both.out, new RegExp(`::warning::#7 could not be merged again at ${SHA}: HTTP 405`));
+  assert.doesNotMatch(both.out, /::error::#7/);
+  assert.match(both.out, /::error::#8 could not be merged/);
+  assert.equal(both.requests.filter((r) => r.method === "PUT").length, 2);
+  // With only #7 labelled, a sweep another head started exits 0.
+  const alone = await attempt(refused, { SHA: other });
+  assert.equal(alone.code, 0, alone.out);
+  assert.match(alone.out, /::warning::#7 could not be merged again/);
+});
+
 test("holds back a labelled head the latest runs show running or red, with no read of its own", async () => {
   const [busy, red, quiet, green] = ["1", "2", "3", "4"].map((c) => c.repeat(40));
   const pulls = [at(7, busy), at(8, red), at(9, quiet), at(10, green)];
