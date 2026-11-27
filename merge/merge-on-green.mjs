@@ -1,17 +1,21 @@
 #!/usr/bin/env node
 // Squash-merges each open pull request labelled `automerge` whose head commit is SHA once every
-// check on it is green (decide.mjs), then deletes its branch. Run by merge-on-green.yml.
+// check on it is green (decide.mjs), then deletes its branch. Run by merge-on-green.yml. Check runs
+// and workflow runs are the whole gate: legacy commit statuses are not read.
 //
 //   REPO=owner/name SHA=<head sha> [PR=<number>] REQUIRED='["Check","Test"]' SELF="Merge on green" \
 //   READ_TOKEN=<token reading actions, checks and pull requests> MERGE_TOKEN=<token writing contents> \
+//   [ALLOWED_BOTS='["name[bot]"]'] [REQUIRE_UP_TO_DATE=true] \
 //   node merge-on-green.mjs
 //
 // Waiting is not failing: a pull request whose checks still run, or which is not labelled, exits 0,
-// and the next finished workflow run looks again. A red check exits 0 too, and says which; a merge
+// and the next finished workflow run looks again. A red check exits 0 too, and says which, as does a
+// label added by someone who may not ask for a merge; a merge
 // GitHub refuses (a conflict, a head that moved) fails the run so the owner hears of it. Nothing is
-// retried here: the next event is the retry.
+// retried here: the next event is the retry. A head behind its base waits for someone to update the
+// branch: this never does.
 
-import { decide } from "./decide.mjs";
+import { decide, LABEL } from "./decide.mjs";
 
 const API = process.env.GITHUB_API_URL ?? "https://api.github.com";
 const TIMEOUT_MS = 30_000;
@@ -45,15 +49,50 @@ async function get(token, path) {
   return data;
 }
 
-/** Every item of a paginated list whose page holds its items under `key`. */
+/** Every item of a paginated list, whose page is the list itself or holds it under `key`. */
 async function all(token, path, key) {
   const items = [];
   for (let page = 1; page <= MAX_PAGES; page++) {
     const data = await get(token, `${path}${path.includes("?") ? "&" : "?"}per_page=100&page=${page}`);
-    items.push(...data[key]);
-    if (data[key].length < 100) return items;
+    const found = key ? data[key] : data;
+    items.push(...found);
+    if (found.length < 100) return items;
   }
   throw new Error(`${path}: more than ${MAX_PAGES * 100} items`);
+}
+
+/** A branch name as it goes in a path: encoded, its slashes kept. */
+const refPath = (name) => encodeURIComponent(name).replaceAll("%2F", "/");
+
+/** Who last added the label, with a user's permission on the repository; null when no event says. */
+async function labelerOf(token, repo, number) {
+  const events = await all(token, `/repos/${repo}/issues/${number}/events`);
+  const added = events.filter((e) => e.event === "labeled" && e.label?.name === LABEL).sort((a, b) => a.id - b.id);
+  const actor = added.at(-1)?.actor;
+  if (!actor) return null;
+  const { login, type } = actor;
+  // A bot is no collaborator: the caller's list is what vouches for it.
+  if (type !== "User") return { login, type };
+  const path = `/repos/${repo}/collaborators/${encodeURIComponent(login)}/permission`;
+  const { status, data } = await request(token, "GET", path);
+  if (status === 404) return { login, type, permission: "none" };
+  if (status !== 200) throw new Error(`GET ${path}: HTTP ${status} ${data?.message ?? ""}`.trim());
+  return { login, type, permission: data.permission };
+}
+
+/** The base branch's tip now, and how many of its commits `sha` lacks. */
+async function baseOf(token, repo, branch, sha) {
+  const { object } = await get(token, `/repos/${repo}/git/ref/heads/${refPath(branch)}`);
+  const { behind_by: behindBy } = await get(token, `/repos/${repo}/compare/${object.sha}...${sha}?per_page=1`);
+  return { sha: object.sha, behindBy };
+}
+
+/** A required entry: a check run name, or `{ check, workflow }` naming the workflow file too. */
+function isRequired(entry) {
+  if (typeof entry === "string") return true;
+  if (entry === null || typeof entry !== "object") return false;
+  const { check, workflow, ...rest } = entry;
+  return typeof check === "string" && /^[^/@]+\.ya?ml$/.test(workflow) && Object.keys(rest).length === 0;
 }
 
 async function main() {
@@ -65,9 +104,16 @@ async function main() {
   const required = JSON.parse(env("REQUIRED"));
   if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repo)) throw new Error(`REPO must be owner/name, got ${repo}`);
   if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error(`SHA must be a full commit SHA, got ${sha}`);
-  if (!Array.isArray(required) || !required.every((name) => typeof name === "string")) {
-    throw new Error("REQUIRED must be a JSON array of check names");
+  if (!Array.isArray(required) || !required.every(isRequired)) {
+    throw new Error('REQUIRED must be a JSON array of check names or {"check": name, "workflow": "file.yml"}');
   }
+  const allowedBots = JSON.parse(process.env.ALLOWED_BOTS || "[]");
+  if (!Array.isArray(allowedBots) || !allowedBots.every((bot) => typeof bot === "string")) {
+    throw new Error("ALLOWED_BOTS must be a JSON array of bot logins");
+  }
+  const upToDate = process.env.REQUIRE_UP_TO_DATE || "false";
+  if (upToDate !== "true" && upToDate !== "false") throw new Error(`REQUIRE_UP_TO_DATE must be true or false, got ${upToDate}`);
+  const requireUpToDate = upToDate === "true";
 
   const { default_branch: defaultBranch } = await get(readToken, `/repos/${repo}`);
   const prs = process.env.PR
@@ -82,9 +128,16 @@ async function main() {
 
   let failed = false;
   for (const pr of prs) {
-    const { action, reason } = decide({ pr, sha, defaultBranch, workflowRuns, checkRuns, required, self });
+    const labelled = pr.state === "open" && pr.labels.some((label) => label.name === LABEL);
+    const labeler = labelled ? await labelerOf(readToken, repo, pr.number) : null;
+    // Read last, so the base is as fresh as it can be when the merge follows.
+    const base = labelled && requireUpToDate ? await baseOf(readToken, repo, defaultBranch, sha) : undefined;
+    const { action, reason } = decide({
+      pr, sha, defaultBranch, workflowRuns, checkRuns, required, self,
+      labeler, allowedBots, requireUpToDate, base,
+    });
     console.log(`#${pr.number} ${action}: ${reason}`);
-    if (action === "red") console.log(`::warning::#${pr.number} is not merged: ${reason}.`);
+    if (action === "red" || action === "refused") console.log(`::warning::#${pr.number} is not merged: ${reason}.`);
     if (action !== "merge") continue;
 
     const merged = await request(mergeToken, "PUT", `/repos/${repo}/pulls/${pr.number}/merge`, {
@@ -99,8 +152,7 @@ async function main() {
     }
     console.log(`#${pr.number} merged as ${merged.data.sha}.`);
     if (pr.head.repo?.full_name === repo) {
-      const ref = encodeURIComponent(pr.head.ref).replaceAll("%2F", "/");
-      const deleted = await request(mergeToken, "DELETE", `/repos/${repo}/git/refs/heads/${ref}`);
+      const deleted = await request(mergeToken, "DELETE", `/repos/${repo}/git/refs/heads/${refPath(pr.head.ref)}`);
       // 422: the branch is already gone.
       if (deleted.status !== 204 && deleted.status !== 422) {
         console.log(`::warning::#${pr.number}'s branch ${pr.head.ref} was not deleted: HTTP ${deleted.status}`);

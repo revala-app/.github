@@ -4,8 +4,9 @@
 # The organisation is on GitHub's free plan, so rulesets and required checks are not enforced on its
 # private repositories, and GitHub's own auto-merge would merge before CI has run. This waits for CI
 # instead: merge/decide.mjs merges only when every workflow run and check run on the head commit
-# finished green and every check named in `required-checks` succeeded. A release pull request
-# (`autorelease:` label) is never merged here.
+# finished green and every check named in `required-checks` succeeded. The label counts only from a
+# user with write access or a bot listed in `allowed-bots`, and `require-up-to-date` also holds back a
+# head that lacks the base's tip. A release pull request (`autorelease:` label) is never merged here.
 #
 # The caller runs it on `workflow_run` (each of its pull-request workflows finishing) and on
 # `pull_request_target` `labeled` (the label added after CI was already green). Neither checks out
@@ -30,10 +31,25 @@ on:
         type: string
       required-checks:
         description: >-
-          JSON array of the check run names that must have succeeded, as `gh pr checks` lists them
-          (a reusable workflow's job is `<caller job id> / <job name>`).
+          JSON array of the checks that must have succeeded. An entry is a check run name, as
+          `gh pr checks` lists it (a reusable workflow's job is `<caller job id> / <job name>`), met
+          only when every check run of that name succeeded; or {"check": name, "workflow": "ci.yml"},
+          met only by that workflow file's check.
         required: true
         type: string
+      allowed-bots:
+        description: >-
+          JSON array of the bot logins (`name[bot]`) whose `automerge` label counts. A user's label
+          counts with write access or more.
+        required: false
+        type: string
+        default: '[]'
+      require-up-to-date:
+        description: >-
+          Wait, without updating the branch, while the head does not contain the base branch's tip.
+        required: false
+        type: boolean
+        default: false
       runs-on:
         description: JSON array of runner labels, consumed with fromJSON.
         required: false
@@ -114,6 +130,8 @@ jobs:
           SHA: ${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}
           PR: ${{ github.event.pull_request.number }}
           REQUIRED: ${{ inputs.required-checks }}
+          ALLOWED_BOTS: ${{ inputs.allowed-bots }}
+          REQUIRE_UP_TO_DATE: ${{ inputs.require-up-to-date }}
           SELF: Merge on green
           READ_TOKEN: ${{ github.token }}
           MERGE_TOKEN: ${{ steps.token.outputs.token }}

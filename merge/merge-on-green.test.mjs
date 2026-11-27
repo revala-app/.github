@@ -9,6 +9,8 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const SHA = "a".repeat(40);
 const REPO = "revala-app/example";
+const BASE = "b".repeat(40);
+const labeled = (login, type = "User", id = 1) => ({ id, event: "labeled", label: { name: "automerge" }, actor: { login, type } });
 
 const pull = (over = {}) => ({
   number: 7,
@@ -32,6 +34,16 @@ async function serve(state) {
       requests.push({ method: req.method, path, auth: req.headers.authorization, body: body && JSON.parse(body) });
       const send = (status, data) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(data));
       if (req.method === "GET" && path === `/repos/${REPO}`) return send(200, { default_branch: "main" });
+      if (req.method === "GET" && path === `/repos/${REPO}/issues/7/events`) return send(200, state.events ?? [labeled("owner")]);
+      const permission = path.match(new RegExp(`^/repos/${REPO}/collaborators/(.+)/permission$`));
+      if (req.method === "GET" && permission) {
+        const level = (state.permissions ?? { owner: "admin" })[permission[1]];
+        return level ? send(200, { permission: level }) : send(404, { message: "Not Found" });
+      }
+      if (req.method === "GET" && path === `/repos/${REPO}/git/ref/heads/main`) return send(200, { object: { sha: BASE } });
+      if (req.method === "GET" && path === `/repos/${REPO}/compare/${BASE}...${SHA}?per_page=1`) {
+        return send(200, { behind_by: state.behindBy ?? 0 });
+      }
       if (req.method === "GET" && path === `/repos/${REPO}/commits/${SHA}/pulls`) return send(200, state.pulls);
       if (req.method === "GET" && path === `/repos/${REPO}/pulls/7`) return send(200, state.pulls[0]);
       if (req.method === "GET" && path === `/repos/${REPO}/actions/runs?head_sha=${SHA}`) {
@@ -127,4 +139,64 @@ test("fails the run when GitHub refuses the merge", async () => {
 test("refuses input that is not a full SHA or a list of names", async () => {
   assert.equal((await run("http://127.0.0.1:9", { SHA: "abc" })).code, 1);
   assert.equal((await run("http://127.0.0.1:9", { REQUIRED: '"Check"' })).code, 1);
+});
+
+/** Runs the script against `state` over the green defaults; says whether it merged. */
+async function attempt(state, env) {
+  const api = await serve({ pulls: [pull()], ...green, ...state });
+  const { code, out } = await run(api.url, env);
+  api.close();
+  return { code, out, requests: api.requests, merged: api.requests.some((r) => r.method === "PUT") };
+}
+
+test("judges whoever added the label last, from the pull request's events", async () => {
+  const events = [labeled("owner", "User", 1), labeled("guest", "User", 2)];
+  const refused = await attempt({ events, permissions: { owner: "admin", guest: "read" } });
+  assert.equal(refused.code, 0, refused.out);
+  assert.equal(refused.merged, false);
+  assert.match(refused.out, /::warning::#7 is not merged: automerge was added by guest/);
+  assert.equal((await attempt({ events: [labeled("stranger")] })).merged, false);
+  assert.equal((await attempt({ events: [] })).merged, false);
+});
+
+test("merges a listed bot's label and no other bot's, without asking its permission", async () => {
+  const events = [labeled("helper[bot]", "Bot")];
+  assert.equal((await attempt({ events })).merged, false);
+  const listed = await attempt({ events }, { ALLOWED_BOTS: '["helper[bot]"]' });
+  assert.equal(listed.merged, true, listed.out);
+  assert.ok(!listed.requests.some((r) => r.path.includes("/collaborators/")));
+});
+
+test("reads the base only when REQUIRE_UP_TO_DATE, and then merges no head that is behind it", async () => {
+  const off = await attempt({ behindBy: 3 });
+  assert.equal(off.merged, true, off.out);
+  assert.ok(!off.requests.some((r) => r.path.includes("/compare/")));
+  const behind = await attempt({ behindBy: 3 }, { REQUIRE_UP_TO_DATE: "true" });
+  assert.equal(behind.code, 0, behind.out);
+  assert.equal(behind.merged, false);
+  assert.match(behind.out, /does not contain main at bbbbbbb/);
+  assert.ok(behind.requests.every((r) => r.method === "GET"), "the branch is not updated");
+  assert.equal((await attempt({}, { REQUIRE_UP_TO_DATE: "true" })).merged, true);
+});
+
+test("reads no legacy commit status: check runs and workflow runs are the gate", async () => {
+  const { requests, merged } = await attempt({});
+  assert.equal(merged, true);
+  assert.ok(!requests.some((r) => /\/status(es)?(\/|\?|$)/.test(r.path)));
+});
+
+test("takes a required entry naming its workflow, and refuses a malformed input", async () => {
+  const runs = [{ ...green.runs[0], check_suite_id: 5, path: ".github/workflows/ci.yml" }];
+  const checks = [{ ...green.checks[0], check_suite: { id: 5 } }];
+  const named = (workflow) => ({ REQUIRED: JSON.stringify([{ check: "Check", workflow }]) });
+  assert.equal((await attempt({ runs, checks }, named("ci.yml"))).merged, true);
+  assert.equal((await attempt({ runs, checks }, named("backup-worker.yml"))).merged, false);
+  for (const env of [
+    { REQUIRED: '[{"check":"Check"}]' },
+    { REQUIRED: '[{"check":"Check","workflow":".github/workflows/ci.yml"}]' },
+    { ALLOWED_BOTS: '"helper[bot]"' },
+    { REQUIRE_UP_TO_DATE: "yes" },
+  ]) {
+    assert.equal((await run("http://127.0.0.1:9", env)).code, 1, JSON.stringify(env));
+  }
 });
