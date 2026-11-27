@@ -48,6 +48,7 @@ function latestChecks(checkRuns, workflowRuns) {
 /** Why the label does not count, or null when whoever added it may ask for a merge. */
 function refusal(labeler, allowedBots) {
   if (!labeler) return `no record of who added ${LABEL}; remove the label and add it again`;
+  if (labeler.unknown) return `${labeler.unknown}; remove the label and add it again`;
   const { login, type, permission } = labeler;
   if (type !== "User") {
     const listed = allowedBots.some((bot) => bot.toLowerCase() === login.toLowerCase());
@@ -67,8 +68,9 @@ function refusal(labeler, allowedBots) {
  * @param {(string | { check: string, workflow: string })[]} input.required Checks that must have
  *   succeeded: a check run name, or a name in one workflow file (`ci.yml`).
  * @param {string} input.self This workflow's name; its own run and check runs are left out.
- * @param {{ login: string, type: string, permission?: string } | null} input.labeler Who last added
- *   the label, and for a user their permission on the repository; null when no event says.
+ * @param {{ login: string, type: string, permission?: string } | { unknown: string } | null} input.labeler
+ *   Who last added the label, and for a user their permission on the repository; null when no event
+ *   says, `unknown` why it cannot be told.
  * @param {string[]} [input.allowedBots] Logins (`name[bot]`) of the bots whose label counts.
  * @param {boolean} [input.requireUpToDate] Wait unless the head contains the base branch's tip.
  * @param {{ sha: string, behindBy: number }} [input.base] The base branch's tip and how many of its

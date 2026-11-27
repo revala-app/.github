@@ -6,6 +6,7 @@
 //   REPO=owner/name SHA=<head sha> [PR=<number>] REQUIRED='["Check","Test"]' SELF="Merge on green" \
 //   READ_TOKEN=<token reading actions, checks and pull requests> MERGE_TOKEN=<token writing contents> \
 //   [ALLOWED_BOTS='["name[bot]"]'] [REQUIRE_UP_TO_DATE=true] \
+//   [LABELER=<login> LABELER_TYPE=<User|Bot>, the sender of the `labeled` event with PR] \
 //   node merge-on-green.mjs
 //
 // Waiting is not failing: a pull request whose checks still run, or which is not labelled, exits 0,
@@ -49,8 +50,11 @@ async function get(token, path) {
   return data;
 }
 
-/** Every item of a paginated list, whose page is the list itself or holds it under `key`. */
-async function all(token, path, key) {
+/**
+ * Every item of a paginated list, whose page is the list itself or holds it under `key`; past
+ * MAX_PAGES it throws, or returns null with `{ partial: true }`.
+ */
+async function all(token, path, key, { partial = false } = {}) {
   const items = [];
   for (let page = 1; page <= MAX_PAGES; page++) {
     const data = await get(token, `${path}${path.includes("?") ? "&" : "?"}per_page=100&page=${page}`);
@@ -58,18 +62,30 @@ async function all(token, path, key) {
     items.push(...found);
     if (found.length < 100) return items;
   }
+  if (partial) return null;
   throw new Error(`${path}: more than ${MAX_PAGES * 100} items`);
 }
 
 /** A branch name as it goes in a path: encoded, its slashes kept. */
 const refPath = (name) => encodeURIComponent(name).replaceAll("%2F", "/");
 
-/** Who last added the label, with a user's permission on the repository; null when no event says. */
-async function labelerOf(token, repo, number) {
-  const events = await all(token, `/repos/${repo}/issues/${number}/events`);
+/** The actor of the last `labeled` event for the label, from the pull request's events. */
+async function lastLabelActor(token, repo, number) {
+  const events = await all(token, `/repos/${repo}/issues/${number}/events`, undefined, { partial: true });
+  // Oldest first, so a list cut short would name an earlier labeler as the last.
+  if (!events) return { unknown: `#${number} has too many events to tell who added ${LABEL}` };
   const added = events.filter((e) => e.event === "labeled" && e.label?.name === LABEL).sort((a, b) => a.id - b.id);
-  const actor = added.at(-1)?.actor;
-  if (!actor) return null;
+  return added.at(-1)?.actor ?? null;
+}
+
+/**
+ * Who added the label, with a user's permission on the repository; null when nothing says. `sender`
+ * is the actor of the `labeled` event this run is for: the events list may not show it yet, and a
+ * pull request already green gets no later run to look again.
+ */
+async function labelerOf(token, repo, number, sender) {
+  const actor = sender ?? (await lastLabelActor(token, repo, number));
+  if (!actor || actor.unknown) return actor;
   const { login, type } = actor;
   // A bot is no collaborator: the caller's list is what vouches for it.
   if (type !== "User") return { login, type };
@@ -114,6 +130,10 @@ async function main() {
   const upToDate = process.env.REQUIRE_UP_TO_DATE || "false";
   if (upToDate !== "true" && upToDate !== "false") throw new Error(`REQUIRE_UP_TO_DATE must be true or false, got ${upToDate}`);
   const requireUpToDate = upToDate === "true";
+  // Only a `labeled` event names a pull request, so its sender speaks for that one alone.
+  const sender = process.env.PR && process.env.LABELER
+    ? { login: process.env.LABELER, type: env("LABELER_TYPE") }
+    : undefined;
 
   const { default_branch: defaultBranch } = await get(readToken, `/repos/${repo}`);
   const prs = process.env.PR
@@ -126,10 +146,10 @@ async function main() {
   const workflowRuns = await all(readToken, `/repos/${repo}/actions/runs?head_sha=${sha}`, "workflow_runs");
   const checkRuns = await all(readToken, `/repos/${repo}/commits/${sha}/check-runs`, "check_runs");
 
-  let failed = false;
-  for (const pr of prs) {
+  /** Judges one pull request and merges it if it may be; false when GitHub refused the merge. */
+  async function settle(pr) {
     const labelled = pr.state === "open" && pr.labels.some((label) => label.name === LABEL);
-    const labeler = labelled ? await labelerOf(readToken, repo, pr.number) : null;
+    const labeler = labelled ? await labelerOf(readToken, repo, pr.number, sender) : null;
     // Read last, so the base is as fresh as it can be when the merge follows.
     const base = labelled && requireUpToDate ? await baseOf(readToken, repo, defaultBranch, sha) : undefined;
     const { action, reason } = decide({
@@ -138,7 +158,7 @@ async function main() {
     });
     console.log(`#${pr.number} ${action}: ${reason}`);
     if (action === "red" || action === "refused") console.log(`::warning::#${pr.number} is not merged: ${reason}.`);
-    if (action !== "merge") continue;
+    if (action !== "merge") return true;
 
     const merged = await request(mergeToken, "PUT", `/repos/${repo}/pulls/${pr.number}/merge`, {
       merge_method: "squash",
@@ -147,8 +167,7 @@ async function main() {
     });
     if (merged.status !== 200) {
       console.log(`::error::#${pr.number} could not be merged: HTTP ${merged.status} ${merged.data?.message ?? ""}`);
-      failed = true;
-      continue;
+      return false;
     }
     console.log(`#${pr.number} merged as ${merged.data.sha}.`);
     if (pr.head.repo?.full_name === repo) {
@@ -157,6 +176,18 @@ async function main() {
       if (deleted.status !== 204 && deleted.status !== 422) {
         console.log(`::warning::#${pr.number}'s branch ${pr.head.ref} was not deleted: HTTP ${deleted.status}`);
       }
+    }
+    return true;
+  }
+
+  let failed = false;
+  for (const pr of prs) {
+    // A failed read or write stops that pull request only; the run still fails.
+    try {
+      if (!(await settle(pr))) failed = true;
+    } catch (error) {
+      console.log(`::error::#${pr.number} was not judged to the end: ${error.message}`);
+      failed = true;
     }
   }
   if (failed) process.exitCode = 1;

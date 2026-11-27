@@ -173,10 +173,15 @@ jobs:
   exists, another workflow's check of the same name meets the entry.
 - **Check runs only.** Legacy commit statuses (`/commits/{sha}/status`) are not read and are not part
   of the gate: a failing or pending status does not hold a merge back.
-- **Who may ask.** The last `labeled` event for `automerge` names who added it. A user needs write
-  access or more (`maintain` included, `triage` not); a bot needs its login in `allowed-bots`
-  (`'["name[bot]"]'`, empty by default); with no such event nothing is merged. A refusal is a warning
-  on the run: someone with access removes the label and adds it again.
+- **Who may ask.** On the `labeled` event, its sender; on `workflow_run` and on a re-run, the actor of
+  the last `labeled` event for `automerge` among the pull request's events. A user needs write access
+  or more (`maintain` included, `triage` not); a bot needs its login in `allowed-bots`
+  (`'["name[bot]"]'`, empty by default). With no such event, or more than 500 events to search,
+  nothing is merged. A refusal is a warning on the run: someone with access removes the label and adds
+  it again.
+- **Token.** The `permissions` block above is enough: the pull request's events need
+  `pull-requests: read` (or `issues: read`), the collaborator permission needs metadata read, which
+  every `GITHUB_TOKEN` has, and the base ref and comparison need `contents: read`.
 - **Up to date, on request.** With `require-up-to-date: true` a head that does not contain the base's
   tip waits, naming the base commit. Nothing updates the branch: its author does, CI runs on the new
   head, and that run merges it. Off by default.
@@ -193,6 +198,12 @@ This is not branch protection: it only decides what the workflow itself merges.
 - **A hand merge of a red pull request.** The merge button and `gh pr merge` work whatever the checks
   say.
 - **A direct push to `main`,** a force-push included. No check runs before it lands.
+- **A same-named check standing in for a plain required entry.** While CI's own run does not exist
+  yet, another workflow's successful check of that name meets `"Check"`. Only the
+  `{"check": "Check", "workflow": "ci.yml"}` form closes this.
+- **What a required job does.** `pull_request` workflows run from the pull request's own workflow
+  files, so its author decides what a required job runs: a green `Check` proves no more than the
+  workflow in that branch. Read a change under `.github/workflows` before labelling it.
 - **A push after the label.** The label's author is judged, not the commits pushed after it was added:
   they merge once green.
 - **A base that moves during the merge.** GitHub's merge call guards the head, not the base. Even with

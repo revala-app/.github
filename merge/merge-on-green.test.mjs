@@ -33,8 +33,14 @@ async function serve(state) {
       const path = req.url.replace(/[?&]per_page=100&page=\d+/, "").replace(/\?$/, "");
       requests.push({ method: req.method, path, auth: req.headers.authorization, body: body && JSON.parse(body) });
       const send = (status, data) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(data));
+      const failing = Object.entries(state.fail ?? {}).find(([part]) => path.includes(part));
+      if (failing) return send(failing[1], { message: "refused by the fake" });
       if (req.method === "GET" && path === `/repos/${REPO}`) return send(200, { default_branch: "main" });
-      if (req.method === "GET" && path === `/repos/${REPO}/issues/7/events`) return send(200, state.events ?? [labeled("owner")]);
+      const events = req.url.match(new RegExp(`^/repos/${REPO}/issues/\\d+/events\\?per_page=100&page=(\\d+)$`));
+      if (req.method === "GET" && events) {
+        const from = (Number(events[1]) - 1) * 100;
+        return send(200, (state.events ?? [labeled("owner")]).slice(from, from + 100));
+      }
       const permission = path.match(new RegExp(`^/repos/${REPO}/collaborators/(.+)/permission$`));
       if (req.method === "GET" && permission) {
         const level = (state.permissions ?? { owner: "admin" })[permission[1]];
@@ -42,7 +48,7 @@ async function serve(state) {
       }
       if (req.method === "GET" && path === `/repos/${REPO}/git/ref/heads/main`) return send(200, { object: { sha: BASE } });
       if (req.method === "GET" && path === `/repos/${REPO}/compare/${BASE}...${SHA}?per_page=1`) {
-        return send(200, { behind_by: state.behindBy ?? 0 });
+        return send(200, state.comparison ?? { behind_by: state.behindBy ?? 0 });
       }
       if (req.method === "GET" && path === `/repos/${REPO}/commits/${SHA}/pulls`) return send(200, state.pulls);
       if (req.method === "GET" && path === `/repos/${REPO}/pulls/7`) return send(200, state.pulls[0]);
@@ -52,7 +58,7 @@ async function serve(state) {
       if (req.method === "GET" && path === `/repos/${REPO}/commits/${SHA}/check-runs`) {
         return send(200, { check_runs: state.checks });
       }
-      if (req.method === "PUT" && path === `/repos/${REPO}/pulls/7/merge`) return send(...(state.merge ?? [200, { sha: "m".repeat(40) }]));
+      if (req.method === "PUT" && /\/pulls\/\d+\/merge$/.test(path)) return send(...(state.merge ?? [200, { sha: "m".repeat(40) }]));
       if (req.method === "DELETE") return send(204, null);
       return send(404, { message: "Not Found" });
     });
@@ -199,4 +205,69 @@ test("takes a required entry naming its workflow, and refuses a malformed input"
   ]) {
     assert.equal((await run("http://127.0.0.1:9", env)).code, 1, JSON.stringify(env));
   }
+});
+
+test("merges nothing, and fails the run, when a read the gate needs fails", async () => {
+  const upToDate = { REQUIRE_UP_TO_DATE: "true" };
+  for (const part of ["/issues/7/events", "/collaborators/", "/git/ref/", "/compare/"]) {
+    for (const status of [403, 500]) {
+      const { code, out, merged } = await attempt({ fail: { [part]: status } }, upToDate);
+      assert.equal(code, 1, `${part} ${status}: ${out}`);
+      assert.equal(merged, false, `${part} ${status}`);
+      assert.match(out, new RegExp(`::error::#7 .*HTTP ${status}`));
+    }
+  }
+});
+
+test("waits when the comparison carries no behind_by", async () => {
+  const { code, out, merged } = await attempt({ comparison: {} }, { REQUIRE_UP_TO_DATE: "true" });
+  assert.equal(code, 0, out);
+  assert.equal(merged, false);
+});
+
+test("refuses a label whose last event has no actor", async () => {
+  const events = [labeled("owner", "User", 1), { ...labeled("gone", "User", 2), actor: null }];
+  const { code, out, merged } = await attempt({ events });
+  assert.equal(code, 0, out);
+  assert.equal(merged, false);
+  assert.match(out, /no record/);
+});
+
+/** `count` events that are not the label's. */
+const noise = (count) => Array.from({ length: count }, (_, i) => ({ id: 1000 + i, event: "subscribed" }));
+
+test("finds the last labeler past the first page of events, in id order whatever the list's", async () => {
+  const permissions = { owner: "admin", guest: "read" };
+  const paged = await attempt({ events: [labeled("owner", "User", 1), ...noise(150), labeled("guest", "User", 5000)], permissions });
+  assert.equal(paged.merged, false);
+  assert.match(paged.out, /added by guest/);
+  const unordered = await attempt({ events: [labeled("guest", "User", 2), labeled("owner", "User", 1)], permissions });
+  assert.match(unordered.out, /added by guest/);
+});
+
+test("refuses, without failing the run, a pull request with more events than it reads", async () => {
+  const { code, out, merged } = await attempt({ events: [labeled("owner"), ...noise(500)] });
+  assert.equal(code, 0, out);
+  assert.equal(merged, false);
+  assert.match(out, /too many events/);
+});
+
+test("judges the `labeled` event by its sender, even before the events list shows the label", async () => {
+  const sender = (login, type = "User") => ({ PR: "7", LABELER: login, LABELER_TYPE: type });
+  const lagging = await attempt({ events: [] }, sender("owner"));
+  assert.equal(lagging.merged, true, lagging.out);
+  assert.ok(!lagging.requests.some((r) => r.path.includes("/events")));
+  assert.equal((await attempt({ permissions: { guest: "read" } }, sender("guest"))).merged, false);
+  assert.equal((await attempt({}, sender("helper[bot]", "Bot"))).merged, false);
+  // Without PR the run is a workflow_run: a sender there is not who added the label.
+  const finished = await attempt({ events: [] }, { LABELER: "owner", LABELER_TYPE: "User" });
+  assert.equal(finished.merged, false);
+});
+
+test("judges the second pull request of a commit after the first one's read fails", async () => {
+  const pulls = [pull(), pull({ number: 8 })];
+  const { code, out, requests } = await attempt({ pulls, fail: { "/issues/7/events": 500 } });
+  assert.equal(code, 1, out);
+  const merges = requests.filter((r) => r.method === "PUT").map((r) => r.path);
+  assert.deepEqual(merges, [`/repos/${REPO}/pulls/8/merge`]);
 });

@@ -171,3 +171,39 @@ test("when asked, waits for a head that contains the base tip, naming the base c
   assert.equal(decide(input({ requireUpToDate: true })).action, "wait");
   assert.equal(decide(input({ base })).action, "merge", "off by default");
 });
+
+test("refuses, saying why, when who added the label cannot be told", () => {
+  const { action, reason } = decide(input({ labeler: { unknown: "#7 has too many events" } }));
+  assert.equal(action, "refused");
+  assert.match(reason, /too many events/);
+});
+
+test("matches a listed bot whatever the case of its login", () => {
+  const labeler = { login: "Helper[bot]", type: "Bot" };
+  assert.equal(decide(input({ labeler, allowedBots: ["helper[BOT]"] })).action, "merge");
+});
+
+test("waits when the comparison does not say how far behind the head is", () => {
+  assert.equal(decide(input({ requireUpToDate: true, base: { sha: "d".repeat(40) } })).action, "wait");
+});
+
+test("a re-run in a second check suite of one workflow supersedes its cancelled check", () => {
+  const ci = (id, suite, conclusion) =>
+    run(id, "CI", conclusion, { workflow_id: 1, check_suite_id: suite, path: ".github/workflows/ci.yml" });
+  const workflowRuns = [ci(1, 100, "cancelled"), ci(2, 101, "success")];
+  const checkRuns = [inSuite(1, "cancelled", 100), inSuite(2, "success", 101)];
+  const required = [{ check: "Check", workflow: "ci.yml" }];
+  assert.equal(decide(input({ workflowRuns, checkRuns, required })).action, "merge");
+});
+
+test("a required entry naming its workflow waits when no listed run owns the check's suite", () => {
+  const required = [{ check: "Check", workflow: "ci.yml" }];
+  assert.equal(shared([inSuite(1, "success", 999)], required).action, "wait");
+});
+
+test("reads a workflow's file name from a path carrying @ref", () => {
+  const workflowRuns = [{ ...sharedRuns[0], path: ".github/workflows/ci.yml@refs/heads/main" }];
+  const required = [{ check: "Check", workflow: "ci.yml" }];
+  const checkRuns = [inSuite(1, "success", 100)];
+  assert.equal(decide(input({ workflowRuns, checkRuns, required })).action, "merge");
+});
