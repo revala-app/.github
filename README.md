@@ -163,14 +163,56 @@ jobs:
 
 - **Green means all of it.** `merge/decide.mjs` waits while any workflow run or check run on the
   head commit is unfinished, stops at any that failed or was cancelled (a later run of the same
-  workflow or check supersedes it), and merges only once every name in `required-checks` succeeded.
-  `required-checks` must name the checks that always run: a path-filtered workflow may not exist yet
-  when the others finish.
+  workflow, or of the same check in the same workflow, supersedes it), and merges only once every
+  entry of `required-checks` succeeded. `skipped` and `neutral` do not block a merge, but they do not
+  satisfy a required entry: that needs `success`. `required-checks` must name the checks that always
+  run: a path-filtered workflow may not exist yet when the others finish.
+- **Required entries.** A string is a check run name, met only when every check run of that name
+  succeeded. `{"check": "Check", "workflow": "ci.yml"}` is met only by that workflow file's check.
+  Use the second form for a job name that more than one workflow uses: otherwise, before CI's run
+  exists, another workflow's check of the same name meets the entry.
+- **Check runs only.** Legacy commit statuses (`/commits/{sha}/status`) are not read and are not part
+  of the gate: a failing or pending status does not hold a merge back.
+- **Who may ask.** On the first run of the `labeled` event for `automerge`, its sender; otherwise
+  (`workflow_run`, a re-run, any other pull request event) the actor of the last `labeled` event for
+  `automerge` among the pull request's events. A user needs write access
+  or more (`maintain` included, `triage` not); a bot needs its login in `allowed-bots`
+  (`'["name[bot]"]'`, empty by default). With no such event, or more than 500 events to search,
+  nothing is merged. A refusal is a warning on the run: someone with access removes the label and adds
+  it again.
+- **Token.** The `permissions` block above is enough: the pull request's events need
+  `pull-requests: read` (or `issues: read`), the collaborator permission needs metadata read, which
+  every `GITHUB_TOKEN` has, and the base ref and comparison need `contents: read`.
+- **Up to date, on request.** With `require-up-to-date: true` a head that does not contain the base's
+  tip waits, naming the base commit. Nothing updates the branch: its author does, CI runs on the new
+  head, and that run merges it. Off by default.
 - **The head it judged.** The merge passes the commit it checked as `sha`, so a push after the
   decision makes GitHub refuse the merge, and the next run judges the new commit.
 - **Never a release.** A pull request with an `autorelease:` label is left for a person.
 - **No pull request code runs.** Both triggers run from the default branch; only `merge/` at
   `tooling-ref` executes.
+
+### What it does not prevent
+
+This is not branch protection: it only decides what the workflow itself merges.
+
+- **A hand merge of a red pull request.** The merge button and `gh pr merge` work whatever the checks
+  say.
+- **A direct push to `main`,** a force-push included. No check runs before it lands.
+- **A same-named check standing in for a plain required entry.** While CI's own run does not exist
+  yet, another workflow's successful check of that name meets `"Check"`. Only the
+  `{"check": "Check", "workflow": "ci.yml"}` form closes this.
+- **What a required job does.** `pull_request` workflows run from the pull request's own workflow
+  files, so its author decides what a required job runs: a green `Check` proves no more than the
+  workflow in that branch. Read a change under `.github/workflows` before labelling it.
+- **A push after the label.** The label's author is judged, not the commits pushed after it was added:
+  they merge once green.
+- **A label re-added before the first run reads.** That run judges its event's sender. If a writer
+  adds the label, it is removed, and someone with only triage access adds it again before the run has
+  read the pull request, the run finds it labelled and merges on the writer's authority.
+- **A base that moves during the merge.** GitHub's merge call guards the head, not the base. Even with
+  `require-up-to-date`, another merge that lands between the read of the base and the merge call (two
+  pull requests turning green within seconds) is not seen.
 
 ## Node setup
 
