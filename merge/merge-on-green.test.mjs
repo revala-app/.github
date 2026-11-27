@@ -252,16 +252,42 @@ test("refuses, without failing the run, a pull request with more events than it 
   assert.match(out, /too many events/);
 });
 
+/** The env of a run for the pull request event that named #7, sent by `login`. */
+const event = (login, type = "User", extra = {}) => ({
+  PR: "7",
+  EVENT_ACTION: "labeled",
+  EVENT_LABEL: "automerge",
+  RUN_ATTEMPT: "1",
+  SENDER_LOGIN: login,
+  SENDER_TYPE: type,
+  ...extra,
+});
+
 test("judges the `labeled` event by its sender, even before the events list shows the label", async () => {
-  const sender = (login, type = "User") => ({ PR: "7", LABELER: login, LABELER_TYPE: type });
-  const lagging = await attempt({ events: [] }, sender("owner"));
+  const lagging = await attempt({ events: [] }, event("owner"));
   assert.equal(lagging.merged, true, lagging.out);
   assert.ok(!lagging.requests.some((r) => r.path.includes("/events")));
-  assert.equal((await attempt({ permissions: { guest: "read" } }, sender("guest"))).merged, false);
-  assert.equal((await attempt({}, sender("helper[bot]", "Bot"))).merged, false);
-  // Without PR the run is a workflow_run: a sender there is not who added the label.
-  const finished = await attempt({ events: [] }, { LABELER: "owner", LABELER_TYPE: "User" });
-  assert.equal(finished.merged, false);
+  assert.equal((await attempt({ permissions: { guest: "read" } }, event("guest"))).merged, false);
+  assert.equal((await attempt({}, event("helper[bot]", "Bot"))).merged, false);
+});
+
+test("reads the events instead of the sender unless this run is the label being added", async () => {
+  // A triage user's label, which the events show; the sender is someone who could merge.
+  const state = { events: [labeled("guest")], permissions: { owner: "admin", guest: "read" } };
+  const others = [
+    { EVENT_ACTION: "unlabeled" },
+    { EVENT_ACTION: "synchronize" },
+    { EVENT_ACTION: "" },
+    { EVENT_LABEL: "documentation" },
+    { RUN_ATTEMPT: "2" },
+    // A workflow_run names no pull request.
+    { PR: "" },
+  ];
+  for (const extra of others) {
+    const { merged, out } = await attempt(state, event("owner", "User", extra));
+    assert.equal(merged, false, JSON.stringify(extra));
+    assert.match(out, /added by guest/, JSON.stringify(extra));
+  }
 });
 
 test("judges the second pull request of a commit after the first one's read fails", async () => {

@@ -173,8 +173,9 @@ jobs:
   exists, another workflow's check of the same name meets the entry.
 - **Check runs only.** Legacy commit statuses (`/commits/{sha}/status`) are not read and are not part
   of the gate: a failing or pending status does not hold a merge back.
-- **Who may ask.** On the `labeled` event, its sender; on `workflow_run` and on a re-run, the actor of
-  the last `labeled` event for `automerge` among the pull request's events. A user needs write access
+- **Who may ask.** On the first run of the `labeled` event for `automerge`, its sender; otherwise
+  (`workflow_run`, a re-run, any other pull request event) the actor of the last `labeled` event for
+  `automerge` among the pull request's events. A user needs write access
   or more (`maintain` included, `triage` not); a bot needs its login in `allowed-bots`
   (`'["name[bot]"]'`, empty by default). With no such event, or more than 500 events to search,
   nothing is merged. A refusal is a warning on the run: someone with access removes the label and adds
@@ -206,6 +207,9 @@ This is not branch protection: it only decides what the workflow itself merges.
   workflow in that branch. Read a change under `.github/workflows` before labelling it.
 - **A push after the label.** The label's author is judged, not the commits pushed after it was added:
   they merge once green.
+- **A label re-added before the first run reads.** That run judges its event's sender. If a writer
+  adds the label, it is removed, and someone with only triage access adds it again before the run has
+  read the pull request, the run finds it labelled and merges on the writer's authority.
 - **A base that moves during the merge.** GitHub's merge call guards the head, not the base. Even with
   `require-up-to-date`, another merge that lands between the read of the base and the merge call (two
   pull requests turning green within seconds) is not seen.

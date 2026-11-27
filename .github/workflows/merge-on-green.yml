@@ -129,9 +129,12 @@ jobs:
           REPO: ${{ github.repository }}
           SHA: ${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}
           PR: ${{ github.event.pull_request.number }}
-          # Who added the label, on the first run of a `labeled` event; a re-run reads the events.
-          LABELER: ${{ github.event_name == 'pull_request_target' && github.run_attempt == 1 && github.event.sender.login || '' }}
-          LABELER_TYPE: ${{ github.event.sender.type }}
+          # What merge/ needs to tell whether this event's sender is who added the label.
+          EVENT_ACTION: ${{ github.event.action }}
+          EVENT_LABEL: ${{ github.event.label.name }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          SENDER_LOGIN: ${{ github.event.sender.login }}
+          SENDER_TYPE: ${{ github.event.sender.type }}
           REQUIRED: ${{ inputs.required-checks }}
           ALLOWED_BOTS: ${{ inputs.allowed-bots }}
           REQUIRE_UP_TO_DATE: ${{ inputs.require-up-to-date }}

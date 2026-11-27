@@ -6,7 +6,8 @@
 //   REPO=owner/name SHA=<head sha> [PR=<number>] REQUIRED='["Check","Test"]' SELF="Merge on green" \
 //   READ_TOKEN=<token reading actions, checks and pull requests> MERGE_TOKEN=<token writing contents> \
 //   [ALLOWED_BOTS='["name[bot]"]'] [REQUIRE_UP_TO_DATE=true] \
-//   [LABELER=<login> LABELER_TYPE=<User|Bot>, the sender of the `labeled` event with PR] \
+//   [EVENT_ACTION=<action> EVENT_LABEL=<label> RUN_ATTEMPT=<n> SENDER_LOGIN=<login> \
+//    SENDER_TYPE=<User|Bot>, the pull request event that named PR] \
 //   node merge-on-green.mjs
 //
 // Waiting is not failing: a pull request whose checks still run, or which is not labelled, exits 0,
@@ -130,9 +131,11 @@ async function main() {
   const upToDate = process.env.REQUIRE_UP_TO_DATE || "false";
   if (upToDate !== "true" && upToDate !== "false") throw new Error(`REQUIRE_UP_TO_DATE must be true or false, got ${upToDate}`);
   const requireUpToDate = upToDate === "true";
-  // Only a `labeled` event names a pull request, so its sender speaks for that one alone.
-  const sender = process.env.PR && process.env.LABELER
-    ? { login: process.env.LABELER, type: env("LABELER_TYPE") }
+  // The sender added the label only on the first run of the `labeled` event for it: on `unlabeled` it
+  // removed it, and a re-run is late. It speaks for the event's own pull request alone.
+  const { PR, EVENT_ACTION, EVENT_LABEL, RUN_ATTEMPT, SENDER_LOGIN } = process.env;
+  const sender = PR && EVENT_ACTION === "labeled" && EVENT_LABEL === LABEL && RUN_ATTEMPT === "1" && SENDER_LOGIN
+    ? { login: SENDER_LOGIN, type: env("SENDER_TYPE") }
     : undefined;
 
   const { default_branch: defaultBranch } = await get(readToken, `/repos/${repo}`);
