@@ -9,8 +9,10 @@
 # head that lacks the base's tip. A release pull request (`autorelease:` label) is never merged here.
 #
 # The caller runs it on `workflow_run` (each of its pull-request workflows finishing) and on
-# `pull_request_target` `labeled` (the label added after CI was already green). Neither checks out
-# the pull request's code: only this repository's merge/ runs, at `tooling-ref`.
+# `pull_request_target` `labeled` (the label added after CI was already green). A finished run judges
+# every labelled pull request, and such runs share one concurrency group per repository; a label event
+# judges its own pull request. Neither checks out the pull request's code: only this repository's
+# merge/ runs, at `tooling-ref`.
 #
 # Reads use the caller's GITHUB_TOKEN; the merge uses the release bot's token, cut down to writing
 # the caller's contents and pull requests, so the merge commit on main starts the caller's push
@@ -70,6 +72,24 @@ jobs:
     name: Merge on green
     runs-on: ${{ fromJSON(inputs.runs-on) }}
     timeout-minutes: 5
+    # One run per repository for finished workflow runs: a burst of them (twenty open pull requests
+    # each finishing several workflows) leaves one run in progress and one pending, which replaces any
+    # pending before it, instead of a runner each. That run judges every labelled pull request at its
+    # own head (merge-on-green.mjs), so no head waits on a run that was replaced. A label event judges
+    # its own pull request by its sender, in a group of its own, so a sweep never replaces it.
+    # The group repeats the `if:` below: an event the job skips (CI on a push to main, another label)
+    # goes to a group of its own run, so it can never replace the pending sweep, whether GitHub
+    # assigns the group before or after it evaluates `if:`.
+    concurrency:
+      # One indentation throughout, so the folded value is a single line.
+      group: >-
+        merge-on-green-job-${{
+        (github.event_name == 'workflow_run'
+        && contains(fromJSON('["pull_request", "pull_request_target"]'), github.event.workflow_run.event)
+        && 'sweep')
+        || (github.event_name == 'pull_request_target' && github.event.label.name == 'automerge'
+        && format('label-{0}', github.event.pull_request.number))
+        || format('skip-{0}', github.run_id) }}
     if: >-
       (github.event_name == 'workflow_run'
         && contains(fromJSON('["pull_request", "pull_request_target"]'), github.event.workflow_run.event))

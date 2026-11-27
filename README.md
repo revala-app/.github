@@ -148,7 +148,13 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: merge-on-green-${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}
+  # One head's runs in turn. A label other than `automerge` is skipped by the job, so it gets a group
+  # of its own run: in the head's group it would replace a pending run that was to judge it.
+  group: >-
+    merge-on-green-${{
+    (github.event_name == 'pull_request_target' && github.event.label.name != 'automerge'
+    && format('skip-{0}', github.run_id))
+    || github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}
 
 jobs:
   merge:
@@ -161,6 +167,25 @@ jobs:
       APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
 ```
 
+- **One run per repository, deciding for all.** A finished workflow run judges every open pull
+  request labelled `automerge`, each at its own head, by the same rule a run on that head would use;
+  with none labelled it reads the list of open pull requests and stops. One read of the repository's
+  latest 100 `pull_request` runs holds back a labelled head they show still running or red, with no
+  reads of its own, which keeps a sweep after every finished run inside `GITHUB_TOKEN`'s 1,000
+  requests an hour; it only holds back, so every head it lets through is judged in full. These runs
+  share one concurrency group per repository (`merge-on-green-job-sweep`, set in the reusable job), so a burst
+  of finished runs leaves one in progress and one pending, and each new one replaces the pending one
+  instead of waiting for a runner of its own: the run left over starts after the last of them and
+  sees what they saw. A `labeled` event judges its own pull request alone, in a group per pull request
+  (`merge-on-green-job-label-<number>`) that a sweep never replaces. Both may judge one green head;
+  the second merge GitHub refuses is reported as done when the pull request was merged at that head.
+  An event the job skips (a push's CI, another label) is put in a group of its own run, so it never
+  replaces the pending sweep.
+- **A refused merge fails its own run only.** When GitHub refuses a merge for any other reason (a
+  conflict: `decide.mjs` does not read `mergeable`), the run fails if it is the pull request's own: its
+  label being added, or a workflow run on its head finishing. A sweep another head started, which
+  finds the same head refused again, logs a warning instead, so one stuck pull request does not fail
+  every run in the repository until someone fixes or unlabels it.
 - **Green means all of it.** `merge/decide.mjs` waits while any workflow run or check run on the
   head commit is unfinished, stops at any that failed or was cancelled (a later run of the same
   workflow, or of the same check in the same workflow, supersedes it), and merges only once every

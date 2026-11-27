@@ -1,7 +1,12 @@
 #!/usr/bin/env node
-// Squash-merges each open pull request labelled `automerge` whose head commit is SHA once every
-// check on it is green (decide.mjs), then deletes its branch. Run by merge-on-green.yml. Check runs
-// and workflow runs are the whole gate: legacy commit statuses are not read.
+// Squash-merges each open pull request labelled `automerge` once every check on its head commit is
+// green (decide.mjs), then deletes its branch. Run by merge-on-green.yml. Check runs and workflow
+// runs are the whole gate: legacy commit statuses are not read.
+//
+// With PR (a `labeled` event), it judges that pull request at SHA. Without (a workflow run that
+// finished), it judges every open labelled pull request at its own head: the workflow collapses a
+// burst of finished runs into one run per repository, so the run that is left must decide for all of
+// them. A head is judged by the same rule either way, so the run that merges it does not matter.
 //
 //   REPO=owner/name SHA=<head sha> [PR=<number>] REQUIRED='["Check","Test"]' SELF="Merge on green" \
 //   READ_TOKEN=<token reading actions, checks and pull requests> MERGE_TOKEN=<token writing contents> \
@@ -12,12 +17,15 @@
 //
 // Waiting is not failing: a pull request whose checks still run, or which is not labelled, exits 0,
 // and the next finished workflow run looks again. A red check exits 0 too, and says which, as does a
-// label added by someone who may not ask for a merge; a merge
-// GitHub refuses (a conflict, a head that moved) fails the run so the owner hears of it. Nothing is
+// label added by someone who may not ask for a merge. A merge GitHub refuses (a conflict, a head
+// that moved) fails the run so the owner hears of it, when the run is that pull request's own: its
+// label being added, or a workflow run on its head finishing. In a sweep another head started, the
+// refusal is the same head refused again (its own runs' sweeps already failed for it), and it is
+// a warning, so one stuck pull request does not fail every run in the repository. Nothing is
 // retried here: the next event is the retry. A head behind its base waits for someone to update the
 // branch: this never does.
 
-import { decide, LABEL } from "./decide.mjs";
+import { decide, LABEL, runsVerdict } from "./decide.mjs";
 
 const API = process.env.GITHUB_API_URL ?? "https://api.github.com";
 const TIMEOUT_MS = 30_000;
@@ -139,22 +147,40 @@ async function main() {
     : undefined;
 
   const { default_branch: defaultBranch } = await get(readToken, `/repos/${repo}`);
-  const prs = process.env.PR
-    ? [await get(readToken, `/repos/${repo}/pulls/${Number(process.env.PR)}`)]
-    : (await get(readToken, `/repos/${repo}/commits/${sha}/pulls`)).filter((pr) => pr.state === "open");
+  const labelled = (pr) => pr.state === "open" && pr.labels.some((label) => label.name === LABEL);
+  const prs = PR
+    ? [await get(readToken, `/repos/${repo}/pulls/${Number(PR)}`)]
+    : (await all(readToken, `/repos/${repo}/pulls?state=open`)).filter(labelled);
   if (prs.length === 0) {
-    console.log(`No open pull request has ${sha} as its head.`);
+    console.log(PR ? `#${Number(PR)} was not found.` : `No open pull request is labelled ${LABEL}.`);
     return;
   }
-  const workflowRuns = await all(readToken, `/repos/${repo}/actions/runs?head_sha=${sha}`, "workflow_runs");
-  const checkRuns = await all(readToken, `/repos/${repo}/commits/${sha}/check-runs`, "check_runs");
+  // A sweep runs after every finished workflow run, and GITHUB_TOKEN may make 1,000 requests an hour
+  // in a repository: one read of the latest pull-request runs holds back each labelled head that is
+  // still running or red without reads of its own. It only holds back, and the run it waits on starts
+  // another sweep when it finishes; a head it does not hold back is judged in full.
+  const recent = PR ? [] : (await get(readToken, `/repos/${repo}/actions/runs?event=pull_request&per_page=100`)).workflow_runs;
 
-  /** Judges one pull request and merges it if it may be; false when GitHub refused the merge. */
-  async function settle(pr) {
-    const labelled = pr.state === "open" && pr.labels.some((label) => label.name === LABEL);
-    const labeler = labelled ? await labelerOf(readToken, repo, pr.number, sender) : null;
+  const eventSha = sha;
+
+  /**
+   * Judges one pull request at `sha` and merges it if it may be; false when GitHub refused the merge
+   * in a run that is the pull request's own (module comment).
+   */
+  async function settle(pr, sha) {
+    const asked = labelled(pr);
+    const early = asked ? runsVerdict(recent, sha, self) : null;
+    if (early) {
+      console.log(`#${pr.number} ${early.action}: ${early.reason}`);
+      if (early.action === "red") console.log(`::warning::#${pr.number} is not merged: ${early.reason}.`);
+      return true;
+    }
+    // An unlabelled pull request is skipped whatever ran on it: its runs are not read.
+    const workflowRuns = asked ? await all(readToken, `/repos/${repo}/actions/runs?head_sha=${sha}`, "workflow_runs") : [];
+    const checkRuns = asked ? await all(readToken, `/repos/${repo}/commits/${sha}/check-runs`, "check_runs") : [];
+    const labeler = asked ? await labelerOf(readToken, repo, pr.number, sender) : null;
     // Read last, so the base is as fresh as it can be when the merge follows.
-    const base = labelled && requireUpToDate ? await baseOf(readToken, repo, defaultBranch, sha) : undefined;
+    const base = asked && requireUpToDate ? await baseOf(readToken, repo, defaultBranch, sha) : undefined;
     const { action, reason } = decide({
       pr, sha, defaultBranch, workflowRuns, checkRuns, required, self,
       labeler, allowedBots, requireUpToDate, base,
@@ -169,7 +195,19 @@ async function main() {
       commit_title: `${pr.title} (#${pr.number})`,
     });
     if (merged.status !== 200) {
-      console.log(`::error::#${pr.number} could not be merged: HTTP ${merged.status} ${merged.data?.message ?? ""}`);
+      // A label event's run and a finished run's sweep are in different concurrency groups, so both
+      // may judge one green head: the second merge is refused because the first one landed.
+      const now = await get(readToken, `/repos/${repo}/pulls/${pr.number}`);
+      if (now.merged && now.head?.sha === sha) {
+        console.log(`#${pr.number} was merged by another run, as ${now.merge_commit_sha}.`);
+        return true;
+      }
+      const why = `HTTP ${merged.status} ${merged.data?.message ?? ""}`.trim();
+      if (!PR && sha !== eventSha) {
+        console.log(`::warning::#${pr.number} could not be merged again at ${sha}: ${why}. A run of its own failed for it.`);
+        return true;
+      }
+      console.log(`::error::#${pr.number} could not be merged: ${why}`);
       return false;
     }
     console.log(`#${pr.number} merged as ${merged.data.sha}.`);
@@ -187,7 +225,7 @@ async function main() {
   for (const pr of prs) {
     // A failed read or write stops that pull request only; the run still fails.
     try {
-      if (!(await settle(pr))) failed = true;
+      if (!(await settle(pr, PR ? sha : pr.head.sha))) failed = true;
     } catch (error) {
       console.log(`::error::#${pr.number} was not judged to the end: ${error.message}`);
       failed = true;
