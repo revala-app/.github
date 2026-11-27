@@ -148,7 +148,13 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: merge-on-green-${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}
+  # One head's runs in turn. A label other than `automerge` is skipped by the job, so it gets a group
+  # of its own run: in the head's group it would replace a pending run that was to judge it.
+  group: >-
+    merge-on-green-${{
+    (github.event_name == 'pull_request_target' && github.event.label.name != 'automerge'
+    && format('skip-{0}', github.run_id))
+    || github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}
 
 jobs:
   merge:
