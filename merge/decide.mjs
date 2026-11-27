@@ -45,6 +45,23 @@ function latestChecks(checkRuns, workflowRuns) {
   return latestBy(owned, (check) => `${check.owner}: ${check.name}`);
 }
 
+/**
+ * What the workflow runs alone say of `sha`: `red` when the latest run of a workflow failed, `wait`
+ * while one is unfinished, or null when every one listed finished green. It never says merge: a
+ * caller uses it to hold back a head early, and `decide` still judges any head it lets through.
+ */
+export function runsVerdict(workflowRuns, sha, self) {
+  const runs = latestBy(
+    workflowRuns.filter((run) => run.name !== self && run.head_sha === sha),
+    (run) => run.workflow_id,
+  );
+  const red = runs.find((run) => run.status === "completed" && !GREEN.has(run.conclusion));
+  if (red) return { action: "red", reason: `${red.name} ${red.conclusion}` };
+  const running = runs.filter((run) => run.status !== "completed");
+  if (running.length > 0) return { action: "wait", reason: `still running: ${running.map((run) => run.name).join(", ")}` };
+  return null;
+}
+
 /** Why the label does not count, or null when whoever added it may ask for a merge. */
 function refusal(labeler, allowedBots) {
   if (!labeler) return `no record of who added ${LABEL}; remove the label and add it again`;

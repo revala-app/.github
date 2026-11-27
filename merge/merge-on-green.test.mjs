@@ -47,17 +47,26 @@ async function serve(state) {
         return level ? send(200, { permission: level }) : send(404, { message: "Not Found" });
       }
       if (req.method === "GET" && path === `/repos/${REPO}/git/ref/heads/main`) return send(200, { object: { sha: BASE } });
-      if (req.method === "GET" && path === `/repos/${REPO}/compare/${BASE}...${SHA}?per_page=1`) {
+      if (req.method === "GET" && new RegExp(`^/repos/${REPO}/compare/${BASE}\\.\\.\\.[0-9a-f]{40}\\?per_page=1$`).test(path)) {
         return send(200, state.comparison ?? { behind_by: state.behindBy ?? 0 });
       }
-      if (req.method === "GET" && path === `/repos/${REPO}/commits/${SHA}/pulls`) return send(200, state.pulls);
-      if (req.method === "GET" && path === `/repos/${REPO}/pulls/7`) return send(200, state.pulls[0]);
-      if (req.method === "GET" && path === `/repos/${REPO}/actions/runs?head_sha=${SHA}`) {
-        return send(200, { workflow_runs: state.runs });
+      if (req.method === "GET" && path === `/repos/${REPO}/pulls?state=open`) {
+        return send(200, state.pulls.filter((pr) => pr.state === "open"));
       }
-      if (req.method === "GET" && path === `/repos/${REPO}/commits/${SHA}/check-runs`) {
-        return send(200, { check_runs: state.checks });
+      const one = path.match(new RegExp(`^/repos/${REPO}/pulls/(\\d+)$`));
+      if (req.method === "GET" && one) {
+        const found = (state.after ?? state.pulls).find((pr) => pr.number === Number(one[1]));
+        return found ? send(200, found) : send(404, { message: "Not Found" });
       }
+      if (req.method === "GET" && path === `/repos/${REPO}/actions/runs?event=pull_request&per_page=100`) {
+        return send(200, { workflow_runs: state.recent ?? [] });
+      }
+      // What ran on a head: `heads[sha]`, or for SHA the state's own runs and checks.
+      const ran = (sha) => state.heads?.[sha] ?? (sha === SHA ? state : { runs: [], checks: [] });
+      const runs = path.match(new RegExp(`^/repos/${REPO}/actions/runs\\?head_sha=([0-9a-f]{40})$`));
+      if (req.method === "GET" && runs) return send(200, { workflow_runs: ran(runs[1]).runs });
+      const checks = path.match(new RegExp(`^/repos/${REPO}/commits/([0-9a-f]{40})/check-runs$`));
+      if (req.method === "GET" && checks) return send(200, { check_runs: ran(checks[1]).checks });
       if (req.method === "PUT" && /\/pulls\/\d+\/merge$/.test(path)) return send(...(state.merge ?? [200, { sha: "m".repeat(40) }]));
       if (req.method === "DELETE") return send(204, null);
       return send(404, { message: "Not Found" });
@@ -296,4 +305,103 @@ test("judges the second pull request of a commit after the first one's read fail
   assert.equal(code, 1, out);
   const merges = requests.filter((r) => r.method === "PUT").map((r) => r.path);
   assert.deepEqual(merges, [`/repos/${REPO}/pulls/8/merge`]);
+});
+
+/** What ran on `sha`: CI and Check, finished with `conclusion` (or still running for null). */
+const ranOn = (sha, conclusion = "success") => ({
+  runs: [{ id: 1, name: "CI", workflow_id: 1, head_sha: sha, status: conclusion ? "completed" : "in_progress", conclusion }],
+  checks: [{ id: 1, name: "Check", status: conclusion ? "completed" : "in_progress", conclusion }],
+});
+const at = (number, sha, over = {}) => pull({ number, head: { sha, ref: `branch-${number}`, repo: { full_name: REPO } }, ...over });
+
+test("after a finished run, judges every labelled pull request at its own head, whichever commit the run was for", async () => {
+  const [green7, green8, busy, bare, red, closed] = ["1", "2", "3", "4", "5", "6"].map((c) => c.repeat(40));
+  const pulls = [
+    at(7, green7),
+    at(8, green8),
+    at(9, busy),
+    at(10, bare, { labels: [] }),
+    at(11, red),
+    at(12, closed, { state: "closed" }),
+  ];
+  const heads = { [green7]: ranOn(green7), [green8]: ranOn(green8), [busy]: ranOn(busy, null), [red]: ranOn(red, "failure") };
+  // The run that finished was on a commit none of them has as its head.
+  const { code, out, requests } = await attempt({ pulls, heads }, { SHA: "c".repeat(40) });
+  assert.equal(code, 0, out);
+  const merges = requests.filter((r) => r.method === "PUT").map((r) => [r.path, r.body.sha]);
+  assert.deepEqual(merges, [
+    [`/repos/${REPO}/pulls/7/merge`, green7],
+    [`/repos/${REPO}/pulls/8/merge`, green8],
+  ]);
+  assert.match(out, /#9 wait: still running: CI, Check/);
+  assert.match(out, /#11 red: CI failure/);
+  // An unlabelled or closed pull request costs no read of its runs.
+  for (const sha of [bare, closed]) assert.ok(!requests.some((r) => r.path.includes(sha)), sha);
+});
+
+test("after a finished run with no labelled pull request open, reads the list and nothing else", async () => {
+  const pulls = [at(7, "1".repeat(40), { labels: [] }), at(8, "2".repeat(40), { labels: [{ name: "documentation" }] })];
+  const { code, out, requests } = await attempt({ pulls });
+  assert.equal(code, 0, out);
+  assert.match(out, /No open pull request is labelled automerge/);
+  assert.deepEqual(
+    requests.map((r) => r.path),
+    [`/repos/${REPO}`, `/repos/${REPO}/pulls?state=open`],
+  );
+});
+
+test("a label event judges its own pull request alone, at the event's commit", async () => {
+  const other = "2".repeat(40);
+  const pulls = [pull(), at(8, other)];
+  const { merged, requests, out } = await attempt({ pulls, heads: { [other]: ranOn(other) } }, event("owner"));
+  assert.equal(merged, true, out);
+  assert.ok(!requests.some((r) => r.path.startsWith(`/repos/${REPO}/pulls?`)));
+  assert.deepEqual(requests.filter((r) => r.method === "PUT").map((r) => r.path), [`/repos/${REPO}/pulls/7/merge`]);
+});
+
+test("a label event's head that has moved on is not merged, though its new head is green", async () => {
+  const moved = "2".repeat(40);
+  const { merged, out } = await attempt({ pulls: [at(7, moved)], heads: { [moved]: ranOn(moved) } }, event("owner"));
+  assert.equal(merged, false);
+  assert.match(out, /has moved on/);
+});
+
+test("takes a merge refused because another run merged that head as done, and no other refusal", async () => {
+  const refused = { merge: [405, { message: "Pull Request is not mergeable" }] };
+  const landed = await attempt({ ...refused, after: [pull({ state: "closed", merged: true, merge_commit_sha: "m".repeat(40) })] });
+  assert.equal(landed.code, 0, landed.out);
+  assert.match(landed.out, /#7 was merged by another run/);
+  const elsewhere = await attempt({ ...refused, after: [pull({ merged: true, head: { sha: "2".repeat(40), ref: "x", repo: { full_name: REPO } } })] });
+  assert.equal(elsewhere.code, 1, elsewhere.out);
+  assert.match(elsewhere.out, /::error::#7 could not be merged: HTTP 405/);
+});
+
+test("holds back a labelled head the latest runs show running or red, with no read of its own", async () => {
+  const [busy, red, quiet, green] = ["1", "2", "3", "4"].map((c) => c.repeat(40));
+  const pulls = [at(7, busy), at(8, red), at(9, quiet), at(10, green)];
+  // The repository's latest runs: #7's still running, #8's failed after an earlier success, #10's green.
+  const recent = [
+    { id: 3, name: "CI", workflow_id: 1, head_sha: busy, status: "in_progress", conclusion: null },
+    { id: 5, name: "CI", workflow_id: 1, head_sha: red, status: "completed", conclusion: "failure" },
+    { id: 4, name: "CI", workflow_id: 1, head_sha: red, status: "completed", conclusion: "success" },
+    { id: 6, name: "CI", workflow_id: 1, head_sha: green, status: "completed", conclusion: "success" },
+    { id: 7, name: "Merge on green", workflow_id: 9, head_sha: green, status: "in_progress", conclusion: null },
+  ];
+  // What each head's own reads would say, if made: all green, so only the early read holds #7 and #8.
+  const heads = Object.fromEntries([busy, red, quiet, green].map((sha) => [sha, ranOn(sha)]));
+  const { code, out, requests } = await attempt({ pulls, heads, recent });
+  assert.equal(code, 0, out);
+  assert.match(out, /#7 wait: still running: CI/);
+  assert.match(out, /#8 red: CI failure/);
+  assert.match(out, /::warning::#8 is not merged: CI failure/);
+  for (const sha of [busy, red]) assert.ok(!requests.some((r) => r.path.includes(sha)), sha);
+  // A head missing from the latest runs, or green in them, is judged in full and merged.
+  const merges = requests.filter((r) => r.method === "PUT").map((r) => r.path);
+  assert.deepEqual(merges, [`/repos/${REPO}/pulls/9/merge`, `/repos/${REPO}/pulls/10/merge`]);
+});
+
+test("a label event's run does not read the repository's latest runs", async () => {
+  const { merged, requests, out } = await attempt({}, event("owner"));
+  assert.equal(merged, true, out);
+  assert.ok(!requests.some((r) => r.path.includes("event=pull_request")));
 });

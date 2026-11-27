@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { decide, LABEL } from "./decide.mjs";
+import { decide, LABEL, runsVerdict } from "./decide.mjs";
 
 const SHA = "a".repeat(40);
 const SELF = "Merge on green";
@@ -206,4 +206,17 @@ test("reads a workflow's file name from a path carrying @ref", () => {
   const required = [{ check: "Check", workflow: "ci.yml" }];
   const checkRuns = [inSuite(1, "success", 100)];
   assert.equal(decide(input({ workflowRuns, checkRuns, required })).action, "merge");
+});
+
+test("runsVerdict holds back a head while its latest run of a workflow is unfinished or red, and never says merge", () => {
+  const S = "a".repeat(40);
+  const r = (id, workflow_id, status, conclusion, over = {}) => ({ id, name: `W${workflow_id}`, workflow_id, head_sha: S, status, conclusion, ...over });
+  assert.equal(runsVerdict([], S, "Merge on green"), null);
+  assert.equal(runsVerdict([r(1, 1, "completed", "success"), r(2, 2, "completed", "skipped")], S, "Merge on green"), null);
+  assert.deepEqual(runsVerdict([r(1, 1, "in_progress", null)], S, "Merge on green"), { action: "wait", reason: "still running: W1" });
+  assert.deepEqual(runsVerdict([r(1, 1, "completed", "cancelled")], S, "Merge on green"), { action: "red", reason: "W1 cancelled" });
+  // A later run of the workflow supersedes a cancelled one; another head's and its own runs do not count.
+  assert.equal(runsVerdict([r(1, 1, "completed", "cancelled"), r(2, 1, "completed", "success")], S, "Merge on green"), null);
+  assert.equal(runsVerdict([r(1, 1, "in_progress", null, { head_sha: "b".repeat(40) })], S, "Merge on green"), null);
+  assert.equal(runsVerdict([r(1, 1, "in_progress", null, { name: "Merge on green" })], S, "Merge on green"), null);
 });
